@@ -1,6 +1,7 @@
 import Foundation
 import PDFKit
 import SwiftUI
+import AppKit
 
 enum DocError: Error { case cannotOpen, locked }
 
@@ -244,7 +245,9 @@ final class DocumentState: Identifiable {
         case .note: return .text
         case .square: return .square
         case .circle: return .circle
-        case .line: return .line
+        case .line, .arrow: return .line
+        case .ink: return .ink
+        case .freeText: return .freeText
         }
     }
 
@@ -273,7 +276,7 @@ final class DocumentState: Identifiable {
             if a.hasFill {
                 ann.interiorColor = a.color.nsColor.withAlphaComponent(0.22)
             }
-        case .line:
+        case .line, .arrow:
             ann.color = a.color.nsColor
             configureBorder(ann, width: a.lineWidth, style: a.lineStyle)
             if let s = a.lineStart, let e = a.lineEnd {
@@ -283,6 +286,29 @@ final class DocumentState: Identifiable {
                 ann.startPoint = CGPoint(x: b.minX, y: b.minY)
                 ann.endPoint = CGPoint(x: b.maxX, y: b.maxY)
             }
+            if a.type == .arrow { ann.endLineStyle = .closedArrow }
+        case .ink:
+            ann.color = a.color.nsColor
+            configureBorder(ann, width: a.lineWidth, style: a.lineStyle)
+            if let strokes = a.inkPoints {
+                // Ink paths are specified relative to the annotation's bounds
+                // (origin at bottom-left, Y up) — same convention as quadrilaterals.
+                for stroke in strokes {
+                    let path = NSBezierPath()
+                    for (i, pt) in stroke.enumerated() {
+                        let rx = CGFloat(pt.x) - b.minX
+                        let ry = CGFloat(pt.y) - b.minY
+                        if i == 0 { path.move(to: CGPoint(x: rx, y: ry)) }
+                        else { path.line(to: CGPoint(x: rx, y: ry)) }
+                    }
+                    ann.add(path)
+                }
+            }
+        case .freeText:
+            ann.contents = a.contents ?? "文本"
+            ann.color = a.color.nsColor
+            ann.font = NSFont.systemFont(ofSize: max(11, a.lineWidth * 6))
+            ann.alignment = NSTextAlignment.left
         }
         ann.shouldDisplay = true
         _ = page
@@ -448,6 +474,59 @@ final class DocumentState: Identifiable {
         addAnnotation(ann)
     }
 
+    /// Build an arrow annotation (a line with a closed arrowhead at the end).
+    func addArrow(start: CGPoint, end: CGPoint, color: NSColor, pageIndex: Int) {
+        let bx = min(start.x, end.x), by = min(start.y, end.y)
+        let ann = Annotation(
+            id: UUID(), pageIndex: pageIndex, type: .arrow,
+            bounds: CRect(x: Double(bx), y: Double(by), w: Double(abs(end.x - start.x)), h: Double(abs(end.y - start.y))),
+            quadPoints: nil, color: CodableColor(color), contents: nil,
+            name: AnnotationType.arrow.label,
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill,
+            lineStart: CPoint(x: Double(start.x), y: Double(start.y)),
+            lineEnd: CPoint(x: Double(end.x), y: Double(end.y))
+        )
+        addAnnotation(ann)
+    }
+
+    /// Build a freehand (ink) annotation from a captured stroke (page coordinates).
+    func addInk(points: [CGPoint], color: NSColor, pageIndex: Int) {
+        guard points.count > 1 else { return }
+        var minX = points[0].x, minY = points[0].y, maxX = points[0].x, maxY = points[0].y
+        for p in points {
+            minX = min(minX, p.x); minY = min(minY, p.y)
+            maxX = max(maxX, p.x); maxY = max(maxY, p.y)
+        }
+        let pad: CGFloat = 4
+        let b = CGRect(x: minX - pad, y: minY - pad,
+                       width: (maxX - minX) + 2 * pad, height: (maxY - minY) + 2 * pad)
+        let strokes: [[CPoint]] = [points.map { CPoint(x: Double($0.x), y: Double($0.y)) }]
+        let ann = Annotation(
+            id: UUID(), pageIndex: pageIndex, type: .ink,
+            bounds: CRect(x: Double(b.minX), y: Double(b.minY), w: Double(b.width), h: Double(b.height)),
+            quadPoints: nil, color: CodableColor(color), contents: nil,
+            name: AnnotationType.ink.label,
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill,
+            inkPoints: strokes
+        )
+        addAnnotation(ann)
+    }
+
+    /// Build a free-text (text box) annotation placed at an explicit bounds.
+    func addFreeText(bounds: CGRect, color: NSColor, pageIndex: Int) {
+        let ann = Annotation(
+            id: UUID(), pageIndex: pageIndex, type: .freeText,
+            bounds: CRect(x: Double(bounds.minX), y: Double(bounds.minY), w: Double(bounds.width), h: Double(bounds.height)),
+            quadPoints: nil, color: CodableColor(color), contents: "文本",
+            name: AnnotationType.freeText.label,
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill
+        )
+        addAnnotation(ann)
+    }
+
     func exportAnnotationsMarkdown() -> String {
         guard !annotations.isEmpty else { return "（无标注）" }
         var out = "# \(fileName) 标注导出\n\n"
@@ -497,5 +576,71 @@ final class DocumentState: Identifiable {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.writeObjects([img])
+    }
+
+    // MARK: Annotation navigation (ours + foreign/Preview ones)
+
+    /// Combined, sorted list of every annotation in the document: ours (by stored
+    /// geometry) and the foreign ones authored by Preview / other tools. Ordered by
+    /// page, then top-to-bottom within a page (Y up, so larger origin wins).
+    func annotationNavItems() -> [(pageIndex: Int, order: CGFloat)] {
+        var items: [(Int, CGFloat)] = []
+        for a in annotations { items.append((a.pageIndex, CGFloat(a.bounds.y))) }
+        for (i, ann) in nativeAnnotationItems() {
+            items.append((i, CGFloat(ann.bounds.origin.y)))
+        }
+        items.sort { lhs, rhs in
+            if lhs.0 != rhs.0 { return lhs.0 < rhs.0 }
+            return lhs.1 > rhs.1
+        }
+        return items
+    }
+
+    func goToNextAnnotation() {
+        let items = annotationNavItems()
+        guard !items.isEmpty else { return }
+        if let idx = items.firstIndex(where: { $0.pageIndex == currentPage }),
+           idx + 1 < items.count {
+            goToPage(items[idx + 1].pageIndex)
+        } else if let n = items.first(where: { $0.pageIndex > currentPage }) {
+            goToPage(n.pageIndex)
+        } else {
+            goToPage(items[0].pageIndex)
+        }
+    }
+
+    func goToPreviousAnnotation() {
+        let items = annotationNavItems()
+        guard !items.isEmpty else { return }
+        if let idx = items.lastIndex(where: { $0.pageIndex == currentPage }), idx > 0 {
+            goToPage(items[idx - 1].pageIndex)
+        } else if let n = items.last(where: { $0.pageIndex < currentPage }) {
+            goToPage(n.pageIndex)
+        } else {
+            goToPage(items[items.count - 1].pageIndex)
+        }
+    }
+
+    // MARK: Export pages as PNG
+
+    /// Render a single page to a PNG file at 2× scale (matches Preview's default export).
+    func exportPagePNG(to url: URL, index: Int) {
+        guard let page = pdfDocument.page(at: index) else { return }
+        let rect = page.bounds(for: .mediaBox)
+        let scale: CGFloat = 2.0
+        let img = page.thumbnail(of: NSSize(width: rect.width * scale, height: rect.height * scale), for: .mediaBox)
+        guard let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: url)
+    }
+
+    /// Export every page as `<name>_pN.png` into the chosen folder.
+    func exportAllPagesPNG(to folder: URL) {
+        let base = (fileName as NSString).deletingPathExtension
+        for i in 0..<pageCount {
+            let name = "\(base)_p\(i + 1).png"
+            exportPagePNG(to: folder.appendingPathComponent(name), index: i)
+        }
     }
 }

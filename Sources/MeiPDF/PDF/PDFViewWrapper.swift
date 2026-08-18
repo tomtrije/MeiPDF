@@ -13,6 +13,11 @@ final class MeiPDFView: PDFView {
     private var tempPage: PDFPage?
     private var tempAnn: PDFAnnotation?
 
+    // Freehand (ink) creation state.
+    private var inkPage: PDFPage?
+    private var inkRawPoints: [CGPoint] = []
+    private var inkTempAnn: PDFAnnotation?
+
     // Annotation-move drag state.
     private var moveAnn: PDFAnnotation?
     private var movePage: PDFPage?
@@ -48,9 +53,32 @@ final class MeiPDFView: PDFView {
             MainActor.assumeIsolated {
                 let ds = self.documentState!
                 let p = self.pagePoint(event, page: page)
+                // Text box: click to drop an editable free-text annotation.
+                if tool == .freeText {
+                    let w: CGFloat = 150, h: CGFloat = 30
+                    let b = CGRect(x: p.x, y: p.y - h, width: w, height: h)
+                    let idx = ds.pdfDocument.index(for: page)
+                    ds.addFreeText(bounds: b, color: ds.activeColor, pageIndex: idx)
+                    ds.activeTool = nil
+                    return
+                }
+                // Freehand: start capturing a stroke.
+                if tool == .ink {
+                    self.inkPage = page
+                    self.inkRawPoints = [p]
+                    let ann = PDFAnnotation(bounds: CGRect(x: p.x, y: p.y, width: 1, height: 1), forType: .ink, withProperties: nil)
+                    ann.color = ds.activeColor
+                    let border = PDFBorder()
+                    border.lineWidth = ds.activeLineWidth
+                    if let pattern = ds.activeLineStyle.dashPattern { border.dashPattern = pattern }
+                    ann.border = border
+                    page.addAnnotation(ann)
+                    self.inkTempAnn = ann
+                    return
+                }
                 self.dragStart = p
                 self.tempPage = page
-                let subtype: PDFAnnotationSubtype = (tool == .circle) ? .circle : (tool == .line) ? .line : .square
+                let subtype: PDFAnnotationSubtype = (tool == .circle) ? .circle : (tool == .line || tool == .arrow) ? .line : .square
                 let ann = PDFAnnotation(bounds: NSRect(x: p.x, y: p.y, width: 1, height: 1), forType: subtype, withProperties: nil)
                 ann.color = ds.activeColor
                 if subtype == .line {
@@ -91,6 +119,40 @@ final class MeiPDFView: PDFView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        // Freehand: accumulate stroke points and rebuild the live ink annotation.
+        if let page = inkPage, inkTempAnn != nil {
+            let p = pagePoint(event, page: page)
+            inkRawPoints.append(p)
+            MainActor.assumeIsolated {
+                let ds = self.documentState!
+                var minX = inkRawPoints[0].x, minY = inkRawPoints[0].y
+                var maxX = minX, maxY = minY
+                for q in inkRawPoints {
+                    minX = min(minX, q.x); minY = min(minY, q.y)
+                    maxX = max(maxX, q.x); maxY = max(maxY, q.y)
+                }
+                let pad: CGFloat = 4
+                let b = CGRect(x: minX - pad, y: minY - pad,
+                               width: (maxX - minX) + 2 * pad, height: (maxY - minY) + 2 * pad)
+                let ann = PDFAnnotation(bounds: b, forType: .ink, withProperties: nil)
+                ann.color = ds.activeColor
+                let border = PDFBorder()
+                border.lineWidth = ds.activeLineWidth
+                if let pattern = ds.activeLineStyle.dashPattern { border.dashPattern = pattern }
+                ann.border = border
+                let path = NSBezierPath()
+                path.move(to: CGPoint(x: inkRawPoints[0].x - b.minX, y: inkRawPoints[0].y - b.minY))
+                for q in inkRawPoints.dropFirst() {
+                    path.line(to: CGPoint(x: q.x - b.minX, y: q.y - b.minY))
+                }
+                ann.add(path)
+                page.removeAnnotation(self.inkTempAnn!)
+                page.addAnnotation(ann)
+                self.inkTempAnn = ann
+            }
+            return
+        }
+
         if let ann = moveAnn, let page = movePage, let start = moveStart, let orig = moveOrigBounds {
             if ann.type == "Note" {
                 // Native drag handled by PDFView; geometry persisted on mouseUp.
@@ -159,6 +221,19 @@ final class MeiPDFView: PDFView {
             return
         }
 
+        // Finalize a freehand stroke: drop the transient preview annotation and let
+        // the model rebuild a durable one (with `inkPoints`) via `addInk`.
+        if let page = inkPage, inkTempAnn != nil, inkRawPoints.count > 1 {
+            let color = MainActor.assumeIsolated { self.documentState?.activeColor } ?? NSColor.systemYellow
+            let idx = MainActor.assumeIsolated { self.documentState?.pdfDocument.index(for: page) } ?? 0
+            MainActor.assumeIsolated {
+                self.documentState?.addInk(points: self.inkRawPoints, color: color, pageIndex: idx)
+                self.documentState?.activeTool = nil
+            }
+            page.removeAnnotation(self.inkTempAnn!)
+        }
+        inkPage = nil; inkRawPoints.removeAll(); inkTempAnn = nil
+
         guard let page = tempPage, let ann = tempAnn, let start = dragStart else {
             super.mouseUp(with: event)
             return
@@ -171,12 +246,18 @@ final class MeiPDFView: PDFView {
         let pageIndex = MainActor.assumeIsolated { self.documentState?.pdfDocument.index(for: page) } ?? 0
         let p = pagePoint(event, page: page)
         page.removeAnnotation(ann)
-        if tool == .line {
+        if tool == .line || tool == .arrow {
             let len = hypot(p.x - start.x, p.y - start.y)
             if len > 3 {
                 let color = MainActor.assumeIsolated { self.documentState?.activeColor } ?? NSColor.systemYellow
-                MainActor.assumeIsolated { self.documentState?.addLine(start: start, end: p, color: color, pageIndex: pageIndex) }
-                MainActor.assumeIsolated { self.documentState?.activeTool = nil }
+                MainActor.assumeIsolated {
+                    if tool == .arrow {
+                        self.documentState?.addArrow(start: start, end: p, color: color, pageIndex: pageIndex)
+                    } else {
+                        self.documentState?.addLine(start: start, end: p, color: color, pageIndex: pageIndex)
+                    }
+                    self.documentState?.activeTool = nil
+                }
             }
         } else {
             let rect = CGRect(x: min(start.x, p.x), y: min(start.y, p.y),
@@ -355,6 +436,9 @@ struct PDFViewWrapper: NSViewRepresentable {
         shapeItem("矩形", .square, into: ann)
         shapeItem("椭圆", .circle, into: ann)
         shapeItem("直线", .line, into: ann)
+        shapeItem("箭头", .arrow, into: ann)
+        shapeItem("手绘", .ink, into: ann)
+        shapeItem("文本框", .freeText, into: ann)
         let annTop = NSMenuItem(title: "标注工具", action: nil, keyEquivalent: "")
         annTop.submenu = ann
         menu.addItem(annTop)

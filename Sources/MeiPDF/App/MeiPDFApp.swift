@@ -1,6 +1,7 @@
 import SwiftUI
 import PDFKit
 import UniformTypeIdentifiers
+import AppKit
 
 @main
 struct MeiPDFApp: App {
@@ -36,6 +37,21 @@ struct MeiPDFApp: App {
                 Button("检查更新…") { UpdaterHost.shared.checkForUpdates() }
                     .keyboardShortcut("u", modifiers: .command)
             }
+            // "打开最近" — wire up the `recentFiles` already maintained by AppState.
+            CommandMenu("打开最近") {
+                if appState.recentFiles.isEmpty {
+                    Text("（暂无最近文件）")
+                } else {
+                    ForEach(appState.recentFiles) { rf in
+                        Button(rf.name) { _ = appState.open(URL(fileURLWithPath: rf.path)) }
+                    }
+                    Divider()
+                    Button("清除最近文件") {
+                        appState.recentFiles.removeAll()
+                        appState.saveRecents()
+                    }
+                }
+            }
             CommandMenu("阅读") {
                 Button("上一页") { activeDoc()?.previousPage() }
                     .keyboardShortcut("[", modifiers: .command)
@@ -67,6 +83,17 @@ struct MeiPDFApp: App {
                     .keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("直线工具") { activeDoc()?.activeTool = .line }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
+                Divider()
+                Button("上一处标注") { activeDoc()?.goToPreviousAnnotation() }
+                Button("下一处标注") { activeDoc()?.goToNextAnnotation() }
+            }
+            CommandMenu("视图") {
+                Button("进入全屏") { toggleFullScreen() }
+                    .keyboardShortcut("f", modifiers: [.command, .control])
+            }
+            CommandMenu("导出") {
+                Button("导出本页为 PNG…") { exportCurrentPageImage() }
+                Button("导出全部页面为 PNG…") { exportAllImages() }
             }
         }
         Settings {
@@ -103,6 +130,32 @@ struct MeiPDFApp: App {
             for url in panel.urls {
                 _ = appState.open(url)
             }
+        }
+    }
+
+    private func toggleFullScreen() {
+        NSApplication.shared.keyWindow?.toggleFullScreen(nil)
+    }
+
+    private func exportCurrentPageImage() {
+        guard let d = activeDoc() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType.png]
+        panel.nameFieldStringValue = "\(d.fileName)_p\(d.currentPage + 1).png"
+        if panel.runModal() == .OK, let url = panel.url {
+            d.exportPagePNG(to: url, index: d.currentPage)
+        }
+    }
+
+    private func exportAllImages() {
+        guard let d = activeDoc() else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "选择文件夹"
+        if panel.runModal() == .OK, let url = panel.url {
+            d.exportAllPagesPNG(to: url)
         }
     }
 }

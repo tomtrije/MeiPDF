@@ -4,6 +4,7 @@ MeiPDF.app/
 
 # Distributed disk images and local release output (DMG + generated appcast + staging)
 Distribution/
+.dmgstage/
 
 # Sparkle signing secrets — NEVER commit these.
 # Secrets/ed25519_private.key (base64 seed consumed by generate_appcast/sign_update)

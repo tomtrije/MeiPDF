@@ -262,6 +262,9 @@ struct AnnotationMenu: View {
         case .square: "square"
         case .circle: "circle"
         case .line: "line.diagonal"
+        case .arrow: "arrow.right"
+        case .ink: "pencil.tip"
+        case .freeText: "text.cursor"
         default: "highlighter"
         }
     }
@@ -300,6 +303,11 @@ struct AnnotationPopover: View {
                 toolButton(.square, "square", "矩形")
                 toolButton(.circle, "circle", "椭圆")
                 toolButton(.line, "line.diagonal", "直线")
+            }
+            HStack(spacing: 8) {
+                toolButton(.arrow, "arrow.right", "箭头")
+                toolButton(.ink, "pencil.tip", "手绘")
+                toolButton(.freeText, "text.cursor", "文本框")
             }
             Divider()
             Text("样式").font(.subheadline).foregroundStyle(.secondary)

@@ -26,7 +26,7 @@ enum Theme: String, Codable, CaseIterable, Identifiable {
 // MARK: - Annotation types
 
 enum AnnotationType: String, Codable, CaseIterable, Identifiable {
-    case highlight, underline, strikeOut, note, square, circle, line
+    case highlight, underline, strikeOut, note, square, circle, line, arrow, ink, freeText
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -37,6 +37,9 @@ enum AnnotationType: String, Codable, CaseIterable, Identifiable {
         case .square: "矩形"
         case .circle: "椭圆"
         case .line: "直线"
+        case .arrow: "箭头"
+        case .ink: "手绘"
+        case .freeText: "文本框"
         }
     }
 }
@@ -100,15 +103,19 @@ struct Annotation: Codable, Identifiable {
     var lineWidth: Double = 2
     var lineStyle: LineStyle = .solid
     var hasFill: Bool = false
-    // Precise endpoints for line annotations (page coordinates).
+    // Precise endpoints for line / arrow annotations (page coordinates).
     var lineStart: CPoint?
     var lineEnd: CPoint?
+    // Stroke points for ink (freehand) annotations, one sub-array per stroke,
+    // stored in absolute page coordinates. Rebuilt relative to `bounds` on render.
+    var inkPoints: [[CPoint]]? = nil
 
     init(id: UUID, pageIndex: Int, type: AnnotationType, bounds: CRect,
          quadPoints: [CPoint]?, color: CodableColor, contents: String?,
          name: String? = nil,
          createdAt: Date, lineWidth: Double = 2, lineStyle: LineStyle = .solid,
-         hasFill: Bool = false, lineStart: CPoint? = nil, lineEnd: CPoint? = nil) {
+         hasFill: Bool = false, lineStart: CPoint? = nil, lineEnd: CPoint? = nil,
+         inkPoints: [[CPoint]]? = nil) {
         self.id = id
         self.pageIndex = pageIndex
         self.type = type
@@ -123,6 +130,7 @@ struct Annotation: Codable, Identifiable {
         self.hasFill = hasFill
         self.lineStart = lineStart
         self.lineEnd = lineEnd
+        self.inkPoints = inkPoints
     }
 
     /// Custom decoder keeps old sidecar files (without style fields) decodable.
@@ -142,6 +150,7 @@ struct Annotation: Codable, Identifiable {
         hasFill = try c.decodeIfPresent(Bool.self, forKey: .hasFill) ?? false
         lineStart = try c.decodeIfPresent(CPoint.self, forKey: .lineStart)
         lineEnd = try c.decodeIfPresent(CPoint.self, forKey: .lineEnd)
+        inkPoints = try c.decodeIfPresent([[CPoint]].self, forKey: .inkPoints)
     }
 }
 
