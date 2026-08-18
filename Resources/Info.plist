@@ -23,6 +23,8 @@
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>MeiPDF</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.meipdf.app</string>
 	<key>CFBundleName</key>

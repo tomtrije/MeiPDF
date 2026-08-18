@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.45" y2="1">
+      <stop offset="0" stop-color="#5B6EF5"/>
+      <stop offset="0.55" stop-color="#6C4CF0"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.30"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.12"/>
+    </linearGradient>
+    <filter id="pageShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="12" stdDeviation="20" flood-color="#1e1b4b" flood-opacity="0.38"/>
+    </filter>
+    <filter id="lensShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#1e1b4b" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+
+  <!-- App tile -->
+  <rect x="64" y="64" width="896" height="896" rx="208" ry="208" fill="url(#tile)"/>
+  <rect x="64" y="64" width="896" height="896" rx="208" ry="208" fill="url(#sheen)"/>
+
+  <!-- Document (PDF page) -->
+  <g filter="url(#pageShadow)">
+    <rect x="250" y="222" width="404" height="506" rx="48" fill="#ffffff"/>
+    <!-- folded corner -->
+    <path d="M566 222 L654 310 L566 310 Z" fill="#E3E6F6"/>
+    <!-- text lines -->
+    <rect x="306" y="318" width="286" height="26" rx="13" fill="#C7CBE6"/>
+    <rect x="306" y="378" width="286" height="26" rx="13" fill="#D8DBF1"/>
+    <rect x="306" y="438" width="206" height="26" rx="13" fill="#D8DBF1"/>
+    <!-- thumbnail / image block (plum accent nodding to "Mei") -->
+    <rect x="306" y="500" width="286" height="132" rx="22" fill="#F1D7EC"/>
+    <circle cx="372" cy="566" r="30" fill="#E4A6D2"/>
+    <path d="M306 632 L420 560 L500 612 L592 548 L592 632 Z" fill="#E9B9DD"/>
+  </g>
+
+  <!-- Magnifier (browse / search) -->
+  <g filter="url(#lensShadow)">
+    <circle cx="690" cy="700" r="122" fill="#ffffff" stroke="#C7CBE6" stroke-width="10"/>
+    <circle cx="690" cy="700" r="96" fill="#EEF0FB"/>
+    <rect x="770" y="780" width="168" height="42" rx="21" fill="#334155" transform="rotate(45 770 780)"/>
+  </g>
+</svg>

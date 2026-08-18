@@ -26,6 +26,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 cp .build/release/MeiPDF "$APP/Contents/MacOS/MeiPDF"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
+# App icon (if present). CFBundleIconFile in Info.plist references "AppIcon".
+if [ -f Resources/AppIcon.icns ]; then
+    cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+fi
+
 # Inject the resolved version into the embedded Info.plist.
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
