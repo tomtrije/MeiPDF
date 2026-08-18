@@ -2,6 +2,7 @@ import Foundation
 import PDFKit
 import SwiftUI
 import AppKit
+import AVFoundation
 
 enum DocError: Error { case cannotOpen, locked }
 
@@ -643,4 +644,42 @@ final class DocumentState: Identifiable {
             exportPagePNG(to: folder.appendingPathComponent(name), index: i)
         }
     }
+
+    // MARK: Page image (for slideshow / inspector)
+
+    /// Render a page to a bitmap image scaled to fit within `maxSize` (capped at 4×).
+    func pageImage(at index: Int, maxSize: CGSize) -> NSImage? {
+        guard let page = pdfDocument.page(at: index) else { return nil }
+        let rect = page.bounds(for: .mediaBox)
+        guard rect.width > 0, rect.height > 0 else { return nil }
+        let scale = min(maxSize.width / rect.width, maxSize.height / rect.height, 4)
+        guard scale > 0 else { return nil }
+        let size = NSSize(width: rect.width * scale, height: rect.height * scale)
+        return page.thumbnail(of: size, for: .mediaBox)
+    }
+
+    // MARK: Speech (朗读 — 对齐预览的朗读功能)
+
+    private var speechSynthesizer: AVSpeechSynthesizer?
+
+    /// Speak the text of the currently displayed page.
+    func speakPage() {
+        guard let page = pdfDocument.page(at: currentPage),
+              let text = page.string, !text.isEmpty else { return }
+        if speechSynthesizer == nil { speechSynthesizer = AVSpeechSynthesizer() }
+        speechSynthesizer?.speak(AVSpeechUtterance(string: text))
+    }
+
+    /// Speak the current text selection (falls back to the page text if none).
+    func speakSelection() {
+        if let sel = pdfView?.currentSelection, let text = sel.string, !text.isEmpty {
+            if speechSynthesizer == nil { speechSynthesizer = AVSpeechSynthesizer() }
+            speechSynthesizer?.speak(AVSpeechUtterance(string: text))
+        } else {
+            speakPage()
+        }
+    }
+
+    func stopSpeaking() { speechSynthesizer?.stopSpeaking(at: .immediate) }
+    var isSpeaking: Bool { speechSynthesizer?.isSpeaking ?? false }
 }

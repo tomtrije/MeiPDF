@@ -86,10 +86,17 @@ struct MeiPDFApp: App {
                 Divider()
                 Button("上一处标注") { activeDoc()?.goToPreviousAnnotation() }
                 Button("下一处标注") { activeDoc()?.goToNextAnnotation() }
+                Divider()
+                Button("朗读本页") { activeDoc()?.speakPage() }
+                Button("朗读选区") { activeDoc()?.speakSelection() }
+                Button("停止朗读") { activeDoc()?.stopSpeaking() }
             }
             CommandMenu("视图") {
                 Button("进入全屏") { toggleFullScreen() }
                     .keyboardShortcut("f", modifiers: [.command, .control])
+                Button("显示检查器") { showInspector() }
+                    .keyboardShortcut("i", modifiers: .command)
+                Button("开始幻灯片放映") { startSlideshow() }
             }
             CommandMenu("导出") {
                 Button("导出本页为 PNG…") { exportCurrentPageImage() }
@@ -101,6 +108,14 @@ struct MeiPDFApp: App {
                 .environment(appState)
                 .frame(width: 480, height: 420)
         }
+        // Separate window scene for the Slideshow (macOS has no `fullScreenCover`
+        // for SwiftUI scenes, so a dedicated window is the native presentation).
+        WindowGroup(id: "slideshow") {
+            if let doc = appState.selectedDocument(id: appState.slideshowDocID) {
+                SlideshowView(doc: doc)
+            }
+        }
+        .windowStyle(.hiddenTitleBar)
     }
 
     // MARK: Helpers (act on the currently visible document)
@@ -135,6 +150,15 @@ struct MeiPDFApp: App {
 
     private func toggleFullScreen() {
         NSApplication.shared.keyWindow?.toggleFullScreen(nil)
+    }
+
+    private func showInspector() {
+        appState.inspectorDocID = appState.selectedID
+    }
+
+    private func startSlideshow() {
+        appState.slideshowDocID = appState.selectedID
+        openWindow(id: "slideshow")
     }
 
     private func exportCurrentPageImage() {

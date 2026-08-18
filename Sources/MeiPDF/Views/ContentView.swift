@@ -13,6 +13,15 @@ struct ContentView: View {
 
     private var doc: DocumentState? { appState.selectedDocument(id: appState.selectedID) }
 
+    /// Bridges `appState.inspectorDoc` (computed from `inspectorDocID`) into the
+    /// `Binding<DocumentState?>` that `.sheet(item:)` requires.
+    private var inspectorBinding: Binding<DocumentState?> {
+        Binding(
+            get: { appState.inspectorDoc },
+            set: { appState.inspectorDocID = $0?.id }
+        )
+    }
+
     var body: some View {
         @Bindable var appState = appState
         VStack(spacing: 0) {
@@ -30,6 +39,8 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .id(doc.id)
                 }
+                Divider()
+                StatusBar(doc: doc)
             } else {
                 WelcomeView(showSidebar: $showSidebar)
             }
@@ -49,6 +60,9 @@ struct ContentView: View {
                               _ = appState.openUnlocked(url, password: pw)
                               showPassword = false
                           })
+        }
+        .sheet(item: inspectorBinding) { doc in
+            InspectorView(doc: doc)
         }
         .onReceive(NotificationCenter.default.publisher(for: .meiPDFRequestPrint)) { _ in
             if doc != nil { showPrint = true }
@@ -144,6 +158,35 @@ struct TabItem: View {
             }
             return false
         }
+    }
+}
+
+// MARK: - Bottom status bar (对齐预览底部信息条)
+
+/// Shows the current page number, page dimensions, and zoom — the small info bar
+/// Preview displays at the bottom of its window.
+struct StatusBar: View {
+    @Bindable var doc: DocumentState
+
+    private var pageRect: CGRect? {
+        doc.pdfDocument.page(at: doc.currentPage)?.bounds(for: .mediaBox)
+    }
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Text("第 \(doc.currentPage + 1) / \(doc.pageCount) 页")
+            if let r = pageRect {
+                Text(String(format: "页面 %.0f × %.0f mm",
+                            r.width * 25.4 / 72, r.height * 25.4 / 72))
+                Text(String(format: "%.0f%%", doc.scaleFactor * 100))
+            }
+            Spacer()
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+        .frame(height: 26)
+        .background(Color(NSColor.windowBackgroundColor))
     }
 }
 

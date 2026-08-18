@@ -15,6 +15,16 @@ final class AppState {
     var toastMessage: String? = nil
     private var toastTask: Task<Void, Never>? = nil
 
+    // MARK: Inspector / Slideshow (overlay surfaces)
+    /// Document whose metadata the Inspector sheet shows (⌘I). `nil` closes it.
+    var inspectorDocID: DocumentState.ID? = nil
+    var inspectorDoc: DocumentState? {
+        guard let id = inspectorDocID else { return nil }
+        return selectedDocument(id: id)
+    }
+    /// Document the Slideshow window was launched on (captured at launch time).
+    var slideshowDocID: DocumentState.ID? = nil
+
     private let recentsKey = "meipdf.recentFiles"
 
     // MARK: Toast
