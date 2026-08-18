@@ -2,17 +2,19 @@
 .build/
 MeiPDF.app/
 
-# Distributed disk images
-*.dmg
-
-# Sparkle release staging (contains the uploaded DMG)
-Updates/
+# Distributed disk images and local release output (DMG + generated appcast + staging)
+Distribution/
 
 # Sparkle signing secrets — NEVER commit these.
-# sparkle/ed25519_private.key  (base64 seed consumed by generate_appcast/sign_update)
-# sparkle/ed25519_private.pem  (PEM master secret)
-sparkle/ed25519_private.key
-sparkle/ed25519_private.pem
+# Secrets/ed25519_private.key (base64 seed consumed by generate_appcast/sign_update)
+# Secrets/ed25519_private.pem (PEM master secret)
+Secrets/
+
+# Transient CI / tool files
+cert.p12
+edkey.txt
+*.keychain
+*.keychain-db
 
 # macOS
 .DS_Store

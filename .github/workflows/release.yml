@@ -80,7 +80,7 @@ jobs:
           echo "Imported identity: $IDENTITY"
 
       - name: Build app + DMG
-        run: bash build-dmg.sh
+        run: bash Scripts/build-dmg.sh
 
       - name: Notarize DMG
         if: ${{ secrets.MACOS_SIGNING_CERT != '' }}
@@ -89,7 +89,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          DMG="MeiPDF-${MEIPDF_VERSION}.dmg"
+          DMG="Distribution/MeiPDF-${MEIPDF_VERSION}.dmg"
           xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
@@ -105,10 +105,10 @@ jobs:
           printf '%s' "$SPARKLE_EDKEY" > edkey.txt
           GEN=$(find .build -name generate_appcast | head -1)
           PREFIX="https://github.com/${{ github.repository }}/releases/download/v${MEIPDF_VERSION}/"
-          rm -rf Updates && mkdir -p Updates
-          cp "MeiPDF-${MEIPDF_VERSION}.dmg" Updates/
-          "$GEN" --ed-key-file edkey.txt --download-url-prefix "$PREFIX" Updates/
-          cp Updates/appcast.xml appcast.xml
+          rm -rf Distribution/.caststage && mkdir -p Distribution/.caststage
+          cp "Distribution/MeiPDF-${MEIPDF_VERSION}.dmg" Distribution/.caststage/
+          "$GEN" --ed-key-file edkey.txt --download-url-prefix "$PREFIX" Distribution/.caststage/
+          cp Distribution/.caststage/appcast.xml Distribution/appcast.xml
 
       - name: Create GitHub Release
         env:
@@ -123,8 +123,8 @@ jobs:
             echo "Release $TAG already exists."
             exit 0
           fi
-          FILES=("MeiPDF-${MEIPDF_VERSION}.dmg")
-          [ -f appcast.xml ] && FILES+=("appcast.xml")
+          FILES=("Distribution/MeiPDF-${MEIPDF_VERSION}.dmg")
+          [ -f Distribution/appcast.xml ] && FILES+=("Distribution/appcast.xml")
           gh release create "$TAG" "${FILES[@]}" \
             --repo "${{ github.repository }}" \
             --title "MeiPDF ${MEIPDF_VERSION}" \

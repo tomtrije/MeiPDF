@@ -3,12 +3,14 @@
 # for auto-update.
 #
 # Env:
-#   MEIPDF_VERSION   version string (default: resolved via version.sh)
+#   MEIPDF_VERSION   version string (default: resolved via Scripts/version.sh)
 #   SIGN_IDENTITY    codesign identity. If unset/'-', ad-hoc signs. Set to e.g.
 #                    "Developer ID Application: <name> (TEAMID)" for distribution.
 set -e
-cd "$(dirname "$0")"
-source "$(dirname "$0")/version.sh"
+# Always operate from the project root, regardless of where this script is invoked.
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+source "Scripts/version.sh"
 
 VERSION="$(resolve_version)"
 export MEIPDF_VERSION="$VERSION"

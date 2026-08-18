@@ -1,21 +1,24 @@
 #!/bin/bash
-# Build a distributable DMG for MeiPDF. Depends on build-app.sh having produced MeiPDF.app.
+# Build a distributable DMG for MeiPDF. Depends on Scripts/build-app.sh having
+# produced MeiPDF.app. The resulting DMG is written to Distribution/.
 #
 # Env:
-#   MEIPDF_VERSION   version string (default: resolved via version.sh)
+#   MEIPDF_VERSION   version string (default: resolved via Scripts/version.sh)
 set -e
-cd "$(dirname "$0")"
-source "$(dirname "$0")/version.sh"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+source "Scripts/version.sh"
 
 VERSION="$(resolve_version)"
 export MEIPDF_VERSION="$VERSION"
-DMG_NAME="MeiPDF-${VERSION}.dmg"
+DMG_NAME="Distribution/MeiPDF-${VERSION}.dmg"
 STAGE=".dmgstage"
 
 # Ensure the app bundle exists and is up to date (also re-resolves VERSION for the app).
-bash build-app.sh
+bash Scripts/build-app.sh
 
 echo "==> Building DMG $DMG_NAME (version $VERSION)"
+mkdir -p "$(dirname "$DMG_NAME")"
 rm -rf "$STAGE" "$DMG_NAME"
 mkdir -p "$STAGE"
 
@@ -25,12 +28,12 @@ ln -s /Applications "$STAGE/Applications"
 
 # Self-use helper: a double-clickable script that strips Gatekeeper quarantine so an
 # ad-hoc (unsigned) build can launch, plus a short README. Harmless when the app is
-# Developer-ID-signed and notarized.
-if [ -f install.command ]; then
-  cp install.command "$STAGE/install.command"
+# Developer-ID-signed and notarized. These live in Distribution/Installer/.
+if [ -f Distribution/Installer/install.command ]; then
+  cp Distribution/Installer/install.command "$STAGE/install.command"
   chmod +x "$STAGE/install.command"
 fi
-[ -f README.txt ] && cp README.txt "$STAGE/README.txt"
+[ -f Distribution/Installer/README.txt ] && cp Distribution/Installer/README.txt "$STAGE/README.txt"
 
 hdiutil create -volname "MeiPDF ${VERSION}" \
     -srcfolder "$STAGE" \
