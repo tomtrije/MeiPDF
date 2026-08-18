@@ -13,21 +13,35 @@ final class DocumentState: Identifiable {
     let pdfDocument: PDFDocument
     var isLocked: Bool = false
 
-    var currentPage: Int = 0
-    var scaleFactor: CGFloat = 1.0
+    // MARK: 状态（运行时实时变化，如当前页 / 缩放；关闭文档即重置）
+    // ---- page-level STATUS (per document, reset when closed) ----
+    var currentPage: Int = 0          // 当前页（状态）
+    var scaleFactor: CGFloat = 1.0    // 缩放倍数（状态）
+    /// When `true`, the zoom factor is locked to `scaleFactor` (manually set / fit /
+    /// actual). When `false`, the view fits automatically. Survives tab switches.
+    var zoomLocked: Bool = false      // 缩放锁定（状态）
+
+    // MARK: 配置（影响功能 / 渲染、可持久化；重新打开文档时恢复）
+    // ---- file-level viewing CONFIG (restored on reopen) ----
     var displayMode: PDFDisplayMode
     var displayDirection: PDFDisplayDirection
     var rotation: Int = 0
     var theme: Theme
 
-    var bookmarks: Set<Int> = []
+    // ---- file-level annotation style CONFIG (restored on reopen) ----
+    var activeTool: AnnotationType? = nil
+    var activeColor: NSColor = NSColor.systemYellow
+    var activeLineWidth: Double = 2
+    var activeLineStyle: LineStyle = .solid
+    var activeFill: Bool = false
+
+    // ---- page-level bookmark CONFIG: page index -> display name ----
+    var bookmarks: [Int: String] = [:]
+
+    // ---- user's own (non-destructive) annotations (CONFIG) ----
     var annotations: [Annotation] = []
 
     weak var pdfView: MeiPDFView?
-
-    // annotation tool state
-    var activeTool: AnnotationType? = nil
-    var activeColor: NSColor = NSColor.systemYellow
 
     // search
     var searchMatches: [PDFSelection] = []
@@ -45,6 +59,9 @@ final class DocumentState: Identifiable {
         self.displayDirection = preferences.defaultDisplayDirection
         self.theme = preferences.defaultTheme
         self.activeColor = preferences.defaultColor.nsColor
+        self.activeLineWidth = preferences.defaultLineWidth
+        self.activeLineStyle = preferences.defaultLineStyle
+        self.activeFill = preferences.defaultFill
         if doc.isLocked {
             self.isLocked = true
         } else {
@@ -56,10 +73,22 @@ final class DocumentState: Identifiable {
 
     private func loadMeta() {
         guard let url = fileURL, let meta = MetaStore.load(for: url) else { return }
-        bookmarks = Set(meta.bookmarks)
+        bookmarks = meta.bookmarks
         rotation = meta.rotation
         annotations = meta.annotations
         currentPage = meta.lastPage
+        // Restore file-level viewing settings (overridden by global defaults until
+        // the user changes them in this session).
+        if let th = Theme(rawValue: meta.theme) { theme = th }
+        displayMode = PDFDisplayMode(rawValue: meta.displayMode) ?? preferences.defaultDisplayMode
+        displayDirection = PDFDisplayDirection(rawValue: meta.displayDirection) ?? preferences.defaultDisplayDirection
+        if meta.activeColor.count == 4 {
+            activeColor = NSColor(srgbRed: meta.activeColor[0], green: meta.activeColor[1],
+                                  blue: meta.activeColor[2], alpha: meta.activeColor[3])
+        }
+        activeLineWidth = meta.lineWidth
+        if let ls = LineStyle(rawValue: meta.lineStyle) { activeLineStyle = ls }
+        activeFill = meta.hasFill
         applyRotationToPages()
         rebuildAnnotationsOnPages()
     }
@@ -77,11 +106,19 @@ final class DocumentState: Identifiable {
 
     func persist() {
         guard let url = fileURL, !isLocked else { return }
+        let c = activeColor.usingColorSpace(.sRGB) ?? activeColor
         let meta = DocumentMeta(
-            bookmarks: Array(bookmarks).sorted(),
+            bookmarks: bookmarks,
             lastPage: currentPage,
             rotation: rotation,
-            annotations: annotations
+            annotations: annotations,
+            theme: theme.rawValue,
+            displayMode: displayMode.rawValue,
+            displayDirection: displayDirection.rawValue,
+            activeColor: [c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent],
+            lineWidth: activeLineWidth,
+            lineStyle: activeLineStyle.rawValue,
+            hasFill: activeFill
         )
         MetaStore.save(meta, for: url)
     }
@@ -121,21 +158,43 @@ final class DocumentState: Identifiable {
 
     // MARK: Zoom
 
-    func zoomIn() { pdfView?.zoomIn(nil); if let s = pdfView?.scaleFactor { scaleFactor = s } }
-    func zoomOut() { pdfView?.zoomOut(nil); if let s = pdfView?.scaleFactor { scaleFactor = s } }
-    func setScale(_ factor: CGFloat) {
-        pdfView?.scaleFactor = max(0.1, min(8, factor))
-        if let s = pdfView?.scaleFactor { scaleFactor = s }
+    func zoomIn() {
+        guard let view = pdfView else { return }
+        view.autoScales = false
+        view.zoomIn(nil)
+        scaleFactor = view.scaleFactor
+        zoomLocked = true
     }
-    func actualSize() { setScale(1.0) }
+    func zoomOut() {
+        guard let view = pdfView else { return }
+        view.autoScales = false
+        view.zoomOut(nil)
+        scaleFactor = view.scaleFactor
+        zoomLocked = true
+    }
+    func setScale(_ factor: CGFloat) {
+        guard let view = pdfView else { return }
+        view.scaleFactor = max(0.1, min(8, factor))
+        scaleFactor = view.scaleFactor
+        zoomLocked = true
+    }
+    func actualSize() {
+        guard let view = pdfView else { return }
+        view.autoScales = false
+        view.scaleFactor = 1.0
+        scaleFactor = 1.0
+        zoomLocked = true
+    }
     func fitWidth() {
-        pdfView?.autoScales = true
-        DispatchQueue.main.async { [weak self] in
-            if let s = self?.pdfView?.scaleFactor { self?.scaleFactor = s }
-        }
+        guard let view = pdfView, let page = pdfDocument.page(at: currentPage) else { return }
+        view.autoScales = false
+        let pageRect = page.bounds(for: .mediaBox)
+        guard pageRect.width > 0 else { return }
+        setScale(view.bounds.width / pageRect.width)
     }
     func fitPage() {
         guard let view = pdfView, let page = pdfDocument.page(at: currentPage) else { return }
+        view.autoScales = false
         let pageRect = page.bounds(for: .mediaBox)
         guard pageRect.width > 0, pageRect.height > 0 else { return }
         let sx = view.bounds.width / pageRect.width
@@ -143,16 +202,39 @@ final class DocumentState: Identifiable {
         setScale(min(sx, sy))
     }
 
-    // MARK: Bookmarks
+    // MARK: Bookmarks (page-level)
 
     func toggleBookmark(_ page: Int) {
-        if bookmarks.contains(page) { bookmarks.remove(page) }
-        else { bookmarks.insert(page) }
+        if bookmarks[page] != nil { bookmarks.removeValue(forKey: page) }
+        else { bookmarks[page] = "第 \(page + 1) 页" }
         persist()
     }
-    func isBookmarked(_ page: Int) -> Bool { bookmarks.contains(page) }
+    func isBookmarked(_ page: Int) -> Bool { bookmarks[page] != nil }
+    func renameBookmark(page: Int, name: String) {
+        bookmarks[page] = name.isEmpty ? "第 \(page + 1) 页" : name
+        persist()
+    }
+    func removeBookmark(page: Int) {
+        bookmarks.removeValue(forKey: page)
+        persist()
+    }
 
-    // MARK: Annotations (non-destructive)
+    // MARK: Defaults (app-level)
+
+    /// Promote the current document's viewing + annotation-style settings to the
+    /// global app defaults, so that documents opened afterwards start with them.
+    func saveAsDefault() {
+        preferences.defaultTheme = theme
+        preferences.defaultDisplayMode = displayMode
+        preferences.defaultDisplayDirection = displayDirection
+        preferences.defaultColor = CodableColor(activeColor)
+        preferences.defaultLineWidth = activeLineWidth
+        preferences.defaultLineStyle = activeLineStyle
+        preferences.defaultFill = activeFill
+        preferences.save()
+    }
+
+    // MARK: Annotations (non-destructive, user's own)
 
     private func subtype(for type: AnnotationType) -> PDFAnnotationSubtype {
         switch type {
@@ -167,9 +249,14 @@ final class DocumentState: Identifiable {
     }
 
     private func makePDFAnnotation(_ a: Annotation) -> PDFAnnotation? {
-        guard pdfDocument.page(at: a.pageIndex) != nil else { return nil }
+        guard let page = pdfDocument.page(at: a.pageIndex) else { return nil }
         let b = NSRect(x: a.bounds.x, y: a.bounds.y, width: a.bounds.w, height: a.bounds.h)
         let ann = PDFAnnotation(bounds: b, forType: subtype(for: a.type), withProperties: nil)
+        // Tag ours so the sidebar can tell them apart from annotations authored by
+        // Preview / other editors, and so dragging / deletion can find them back.
+        // Encode the stable id in `userName` ("MeiPDF:<uuid>") — this SDK has no
+        // `name` property on PDFAnnotation, but `userName` is reliably present.
+        ann.userName = "MeiPDF:" + a.id.uuidString
         switch a.type {
         case .highlight, .underline, .strikeOut:
             if let quads = a.quadPoints {
@@ -182,13 +269,31 @@ final class DocumentState: Identifiable {
             ann.iconType = .note
         case .square, .circle:
             ann.color = a.color.nsColor
+            configureBorder(ann, width: a.lineWidth, style: a.lineStyle)
+            if a.hasFill {
+                ann.interiorColor = a.color.nsColor.withAlphaComponent(0.22)
+            }
         case .line:
             ann.color = a.color.nsColor
-            ann.startPoint = CGPoint(x: b.minX, y: b.minY)
-            ann.endPoint = CGPoint(x: b.maxX, y: b.maxY)
+            configureBorder(ann, width: a.lineWidth, style: a.lineStyle)
+            if let s = a.lineStart, let e = a.lineEnd {
+                ann.startPoint = CGPoint(x: s.x, y: s.y)
+                ann.endPoint = CGPoint(x: e.x, y: e.y)
+            } else {
+                ann.startPoint = CGPoint(x: b.minX, y: b.minY)
+                ann.endPoint = CGPoint(x: b.maxX, y: b.maxY)
+            }
         }
         ann.shouldDisplay = true
+        _ = page
         return ann
+    }
+
+    private func configureBorder(_ ann: PDFAnnotation, width: Double, style: LineStyle) {
+        let border = PDFBorder()
+        border.lineWidth = width
+        if let pattern = style.dashPattern { border.dashPattern = pattern }
+        ann.border = border
     }
 
     private func rebuildAnnotationsOnPages() {
@@ -212,22 +317,55 @@ final class DocumentState: Identifiable {
     func removeAnnotation(id: UUID) {
         guard let idx = annotations.firstIndex(where: { $0.id == id }) else { return }
         let a = annotations[idx]
-        let wantType = subtype(for: a.type).rawValue
-        let bx = CGFloat(a.bounds.x), by = CGFloat(a.bounds.y)
-        let bw = CGFloat(a.bounds.w), bh = CGFloat(a.bounds.h)
         if let page = pdfDocument.page(at: a.pageIndex) {
-            for ann in page.annotations {
-                guard ann.type == wantType else { continue }
-                let b = ann.bounds
-                if abs(b.origin.x - bx) < 1 && abs(b.origin.y - by) < 1 &&
-                   abs(b.width - bw) < 1 && abs(b.height - bh) < 1 {
-                    page.removeAnnotation(ann)
-                    break
-                }
+            // Match by the stable id we stamped into `userName` — robust against any
+            // floating-point drift in bounds.
+            let key = "MeiPDF:" + id.uuidString
+            for ann in page.annotations where ann.userName == key {
+                page.removeAnnotation(ann)
+                break
             }
         }
         annotations.remove(at: idx)
         persist()
+    }
+
+    /// Called after an in-page drag of one of our own annotations: persist the new
+    /// geometry (bounds, and for lines the endpoints).
+    func updateAnnotation(id: UUID, bounds: CGRect, start: CGPoint?, end: CGPoint?) {
+        guard let idx = annotations.firstIndex(where: { $0.id == id }) else { return }
+        var a = annotations[idx]
+        a.bounds = CRect(x: Double(bounds.origin.x), y: Double(bounds.origin.y),
+                         w: Double(bounds.width), h: Double(bounds.height))
+        if let s = start { a.lineStart = CPoint(x: Double(s.x), y: Double(s.y)) }
+        if let e = end { a.lineEnd = CPoint(x: Double(e.x), y: Double(e.y)) }
+        annotations[idx] = a
+        persist()
+    }
+
+    func renameAnnotation(id: UUID, name: String) {
+        guard let idx = annotations.firstIndex(where: { $0.id == id }) else { return }
+        annotations[idx].name = name.isEmpty ? nil : name
+        persist()
+    }
+
+    // MARK: Native (foreign) annotations
+
+    func nativeAnnotationItems() -> [(pageIndex: Int, annotation: PDFAnnotation)] {
+        guard !isLocked else { return [] }
+        var items: [(Int, PDFAnnotation)] = []
+        for i in 0..<pageCount {
+            guard let page = pdfDocument.page(at: i) else { continue }
+            for ann in page.annotations where ann.userName?.hasPrefix("MeiPDF") == false {
+                items.append((i, ann))
+            }
+        }
+        return items
+    }
+
+    func removeNativeAnnotation(pageIndex: Int, annotation: PDFAnnotation) {
+        guard !isLocked else { return }
+        pdfDocument.page(at: pageIndex)?.removeAnnotation(annotation)
     }
 
     /// Build a text-mark annotation (highlight/underline/strike) from current selection.
@@ -240,39 +378,72 @@ final class DocumentState: Identifiable {
             guard let lp = line.pages.first else { continue }
             let b = line.bounds(for: lp)
             if union == .zero { union = b } else { union = union.union(b) }
-            quads.append(CPoint(x: Double(b.minX), y: Double(b.minY)))
-            quads.append(CPoint(x: Double(b.maxX), y: Double(b.minY)))
-            quads.append(CPoint(x: Double(b.maxX), y: Double(b.maxY)))
-            quads.append(CPoint(x: Double(b.minX), y: Double(b.maxY)))
+            // Quadrilateral points are specified **relative to the annotation's
+            // bounding box** (PDF spec 12.5.6.14), origin at the box's bottom-left,
+            // with the Y axis pointing up. Using absolute page coordinates is what
+            // previously made highlights/underlines/strike-outs never render.
+            let ox = union.origin.x, oy = union.origin.y
+            quads.append(CPoint(x: Double(b.minX - ox), y: Double(b.minY - oy))) // BL
+            quads.append(CPoint(x: Double(b.maxX - ox), y: Double(b.minY - oy))) // BR
+            quads.append(CPoint(x: Double(b.maxX - ox), y: Double(b.maxY - oy))) // TR
+            quads.append(CPoint(x: Double(b.minX - ox), y: Double(b.maxY - oy))) // TL
         }
         let ann = Annotation(
             id: UUID(), pageIndex: pageIndex, type: type,
             bounds: CRect(x: Double(union.minX), y: Double(union.minY), w: Double(union.width), h: Double(union.height)),
-            quadPoints: quads, color: CodableColor(color), contents: nil, createdAt: Date()
+            quadPoints: quads, color: CodableColor(color), contents: nil,
+            name: type.label,
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill
         )
         addAnnotation(ann)
     }
 
-    /// Build a shape annotation from a drag rectangle in page coordinates.
-    func addShape(type: AnnotationType, rect: CGRect, color: NSColor) {
-        let pageIndex = currentPage
+    /// Build a shape annotation from a drag rectangle. `pageIndex` is the page the
+    /// user actually drew on (not `currentPage`, which can be stale during a drag).
+    func addShape(type: AnnotationType, rect: CGRect, color: NSColor, pageIndex: Int) {
         let ann = Annotation(
             id: UUID(), pageIndex: pageIndex, type: type,
             bounds: CRect(x: Double(rect.minX), y: Double(rect.minY), w: Double(rect.width), h: Double(rect.height)),
-            quadPoints: nil, color: CodableColor(color), contents: nil, createdAt: Date()
+            quadPoints: nil, color: CodableColor(color), contents: nil,
+            name: type.label,
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill
         )
         addAnnotation(ann)
     }
 
-    /// Build a note annotation from current selection bounds.
+    /// Build a line annotation from explicit start/end points.
+    func addLine(start: CGPoint, end: CGPoint, color: NSColor, pageIndex: Int) {
+        let bx = min(start.x, end.x), by = min(start.y, end.y)
+        let ann = Annotation(
+            id: UUID(), pageIndex: pageIndex, type: .line,
+            bounds: CRect(x: Double(bx), y: Double(by), w: Double(abs(end.x - start.x)), h: Double(abs(end.y - start.y))),
+            quadPoints: nil, color: CodableColor(color), contents: nil,
+            name: AnnotationType.line.label,
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill,
+            lineStart: CPoint(x: Double(start.x), y: Double(start.y)),
+            lineEnd: CPoint(x: Double(end.x), y: Double(end.y))
+        )
+        addAnnotation(ann)
+    }
+
+    /// Build a note annotation. The icon is placed at the top-left of the selection
+    /// as a small fixed-size marker so it does not cover the selected text.
     func addNote(text: String, color: NSColor) {
         guard let sel = pdfView?.currentSelection, let page = sel.pages.first else { return }
         let pageIndex = pdfDocument.index(for: page)
         let b = sel.bounds(for: page)
+        let size: CGFloat = 22
+        let nb = CGRect(x: b.minX, y: b.maxY - size, width: size, height: size)
         let ann = Annotation(
             id: UUID(), pageIndex: pageIndex, type: .note,
-            bounds: CRect(x: Double(b.minX), y: Double(b.minY), w: max(20, Double(b.width)), h: max(20, Double(b.height))),
-            quadPoints: nil, color: CodableColor(color), contents: text, createdAt: Date()
+            bounds: CRect(x: Double(nb.minX), y: Double(nb.minY), w: Double(nb.width), h: Double(nb.height)),
+            quadPoints: nil, color: CodableColor(color), contents: text,
+            name: "笔记",
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill
         )
         addAnnotation(ann)
     }
@@ -282,7 +453,8 @@ final class DocumentState: Identifiable {
         var out = "# \(fileName) 标注导出\n\n"
         let sorted = annotations.sorted { $0.pageIndex < $1.pageIndex }
         for a in sorted {
-            out += "- 第 \(a.pageIndex + 1) 页 · \(a.type.label)\n"
+            let label = a.name ?? a.type.label
+            out += "- 第 \(a.pageIndex + 1) 页 · \(label)\n"
             if let c = a.contents, !c.isEmpty { out += "  > \(c)\n" }
         }
         return out
@@ -316,7 +488,6 @@ final class DocumentState: Identifiable {
 
     // MARK: Snapshot
 
-    /// Copy the current page as a high-resolution image to the pasteboard.
     func copyPageImage() {
         guard let page = pdfDocument.page(at: currentPage) else { return }
         let pageRect = page.bounds(for: .mediaBox)

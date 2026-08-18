@@ -4,7 +4,6 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppState.self) private var appState
-    @State private var selectedID: DocumentState.ID?
     @State private var showSidebar = true
     @State private var sidebarTab: SidebarTab = .thumbnails
     @State private var showPrint = false
@@ -12,29 +11,32 @@ struct ContentView: View {
     @State private var passwordInput = ""
     @State private var showPreferences = false
 
-    private var doc: DocumentState? { appState.selectedDocument(id: selectedID) }
+    private var doc: DocumentState? { appState.selectedDocument(id: appState.selectedID) }
 
     var body: some View {
+        @Bindable var appState = appState
         VStack(spacing: 0) {
             if let doc {
-                TopTabBar(selectedID: $selectedID, showSidebar: $showSidebar)
+                TopTabBar(selectedID: $appState.selectedID, showSidebar: $showSidebar)
                 Divider()
                 HStack(spacing: 0) {
                     if showSidebar {
                         Sidebar(doc: doc, tab: $sidebarTab)
                             .frame(width: 260)
+                            .id(doc.id)
                         Divider()
                     }
                     PDFViewWrapper(doc: doc)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .id(doc.id)
                 }
             } else {
                 WelcomeView(showSidebar: $showSidebar)
             }
         }
         .toolbar {
-            if let doc {
-                BrowserToolbar(doc: doc, showSidebar: $showSidebar, sidebarTab: $sidebarTab,
+            if appState.selectedDocument(id: appState.selectedID) != nil {
+                BrowserToolbar(appState: appState, showSidebar: $showSidebar, sidebarTab: $sidebarTab,
                                showPrint: $showPrint)
             }
         }
@@ -57,6 +59,26 @@ struct ContentView: View {
         .onChange(of: appState.pendingPasswordURL) { _, new in
             if new != nil { showPassword = true }
         }
+        .overlay(alignment: .top) {
+            if let msg = appState.toastMessage {
+                ToastView(message: msg)
+                    .padding(.top, 12)
+            }
+        }
+    }
+}
+
+struct ToastView: View {
+    let message: String
+    var body: some View {
+        Text(message)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background(Capsule().fill(Color(nsColor: .windowBackgroundColor)).shadow(radius: 4))
+            .overlay(Capsule().stroke(Color.accentColor.opacity(0.5)))
+            .foregroundStyle(.primary)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .animation(.easeOut(duration: 0.2), value: message)
     }
 }
 
@@ -109,6 +131,19 @@ struct TabItem: View {
         .clipShape(RoundedRectangle(cornerRadius: 7))
         .contentShape(Rectangle())
         .onTapGesture { selectedID = doc.id }
+        .contextMenu {
+            Button("关闭当前") { appState.close(doc) }
+            Button("关闭其他") { appState.closeOthers(keep: doc.id) }
+            Button("关闭全部") { appState.closeAll() }
+        }
+        .onDrag { NSItemProvider(object: doc.id.uuidString as NSString) }
+        .dropDestination(for: String.self) { items, _ in
+            if let src = items.first, let srcID = UUID(uuidString: src) {
+                appState.moveDocument(srcID, before: doc.id)
+                return true
+            }
+            return false
+        }
     }
 }
 

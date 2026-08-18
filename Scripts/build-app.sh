@@ -31,6 +31,11 @@ if [ -f Resources/AppIcon.icns ]; then
     cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 fi
 
+# Localizations (zh-Hans) so system menus / panels render in Chinese.
+if [ -d Resources/zh-Hans.lproj ]; then
+    cp -R Resources/zh-Hans.lproj "$APP/Contents/Resources/zh-Hans.lproj"
+fi
+
 # Inject the resolved version into the embedded Info.plist.
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"

@@ -41,6 +41,28 @@ enum AnnotationType: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Annotation line styles
+
+enum LineStyle: String, Codable, CaseIterable, Identifiable {
+    case solid, dashed, dotted
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .solid: "实线"
+        case .dashed: "虚线"
+        case .dotted: "点线"
+        }
+    }
+    /// Dash pattern in PDF points; `nil` means a solid line.
+    var dashPattern: [CGFloat]? {
+        switch self {
+        case .solid: nil
+        case .dashed: [4, 3]
+        case .dotted: [1.5, 3]
+        }
+    }
+}
+
 struct CodableColor: Codable {
     var r: Double, g: Double, b: Double, a: Double
     var nsColor: NSColor {
@@ -52,6 +74,9 @@ struct CodableColor: Codable {
         g = c.greenComponent
         b = c.blueComponent
         a = c.alphaComponent
+    }
+    init(r: Double, g: Double, b: Double, a: Double) {
+        self.r = r; self.g = g; self.b = b; self.a = a
     }
 }
 
@@ -66,16 +91,84 @@ struct Annotation: Codable, Identifiable {
     var quadPoints: [CPoint]?
     var color: CodableColor
     var contents: String?
+    /// Display name shown in the sidebar; editable by the user. Defaults to the
+    /// type label when `nil`.
+    var name: String?
     var createdAt: Date
+
+    // Style fields (only meaningful for shape / line annotations).
+    var lineWidth: Double = 2
+    var lineStyle: LineStyle = .solid
+    var hasFill: Bool = false
+    // Precise endpoints for line annotations (page coordinates).
+    var lineStart: CPoint?
+    var lineEnd: CPoint?
+
+    init(id: UUID, pageIndex: Int, type: AnnotationType, bounds: CRect,
+         quadPoints: [CPoint]?, color: CodableColor, contents: String?,
+         name: String? = nil,
+         createdAt: Date, lineWidth: Double = 2, lineStyle: LineStyle = .solid,
+         hasFill: Bool = false, lineStart: CPoint? = nil, lineEnd: CPoint? = nil) {
+        self.id = id
+        self.pageIndex = pageIndex
+        self.type = type
+        self.bounds = bounds
+        self.quadPoints = quadPoints
+        self.color = color
+        self.contents = contents
+        self.name = name
+        self.createdAt = createdAt
+        self.lineWidth = lineWidth
+        self.lineStyle = lineStyle
+        self.hasFill = hasFill
+        self.lineStart = lineStart
+        self.lineEnd = lineEnd
+    }
+
+    /// Custom decoder keeps old sidecar files (without style fields) decodable.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        pageIndex = try c.decode(Int.self, forKey: .pageIndex)
+        type = try c.decode(AnnotationType.self, forKey: .type)
+        bounds = try c.decode(CRect.self, forKey: .bounds)
+        quadPoints = try c.decodeIfPresent([CPoint].self, forKey: .quadPoints)
+        color = try c.decode(CodableColor.self, forKey: .color)
+        contents = try c.decodeIfPresent(String.self, forKey: .contents)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        lineWidth = try c.decodeIfPresent(Double.self, forKey: .lineWidth) ?? 2
+        lineStyle = try c.decodeIfPresent(LineStyle.self, forKey: .lineStyle) ?? .solid
+        hasFill = try c.decodeIfPresent(Bool.self, forKey: .hasFill) ?? false
+        lineStart = try c.decodeIfPresent(CPoint.self, forKey: .lineStart)
+        lineEnd = try c.decodeIfPresent(CPoint.self, forKey: .lineEnd)
+    }
 }
 
 // MARK: - Document metadata (non-destructive sidecar)
 
+/// Everything MeiPDF remembers about a single file, stored in a sidecar JSON next
+/// to the PDF (never mutating the original). Three responsibility levels:
+///  - **page-level**: `lastPage`, `bookmarks` (which page + its display name)
+///  - **file-level viewing settings**: `theme` / `displayMode` / `displayDirection` /
+///    `activeColor` / `lineWidth` / `lineStyle` / `hasFill` — restored every time the
+///    file is reopened, but overridden by the global app defaults until the user
+///    changes them in-session.
+///  - **annotations**: the user's own (non-destructive) marks.
 struct DocumentMeta: Codable {
-    var bookmarks: [Int] = []
+    var bookmarks: [Int: String] = [:]
     var lastPage: Int = 0
     var rotation: Int = 0
     var annotations: [Annotation] = []
+
+    // File-level viewing settings (see DocumentState.loadMeta / persist).
+    var theme: String = Theme.light.rawValue
+    var displayMode: Int = PDFDisplayMode.singlePageContinuous.rawValue
+    var displayDirection: Int = PDFDisplayDirection.vertical.rawValue
+    var activeColor: [Double] = [1, 0.8, 0, 1]
+    var lineWidth: Double = 2
+    var lineStyle: String = LineStyle.solid.rawValue
+    var hasFill: Bool = false
 }
 
 // MARK: - Recent files
@@ -99,6 +192,43 @@ final class Preferences {
     var enableGestures: Bool = true
     var checkForUpdatesAutomatically: Bool = true
     var defaultColor: CodableColor = CodableColor(NSColor.systemYellow)
+    var defaultLineWidth: Double = 2
+    var defaultLineStyle: LineStyle = .solid
+    var defaultFill: Bool = false
+
+    private let defaultsKey = "meipdf.preferences"
+
+    init() { load() }
+
+    func load() {
+        guard let d = UserDefaults.standard.dictionary(forKey: defaultsKey) else { return }
+        if let t = d["theme"] as? String, let th = Theme(rawValue: t) { defaultTheme = th }
+        if let m = d["mode"] as? Int {
+            defaultDisplayMode = PDFDisplayMode(rawValue: m) ?? .singlePageContinuous
+        }
+        if let dir = d["dir"] as? Int {
+            defaultDisplayDirection = PDFDisplayDirection(rawValue: dir) ?? .vertical
+        }
+        if let c = d["color"] as? [Double], c.count == 4 {
+            defaultColor = CodableColor(r: c[0], g: c[1], b: c[2], a: c[3])
+        }
+        if let w = d["width"] as? Double { defaultLineWidth = w }
+        if let s = d["style"] as? String, let ls = LineStyle(rawValue: s) { defaultLineStyle = ls }
+        if let f = d["fill"] as? Bool { defaultFill = f }
+    }
+
+    func save() {
+        let d: [String: Any] = [
+            "theme": defaultTheme.rawValue,
+            "mode": Int(defaultDisplayMode.rawValue),
+            "dir": Int(defaultDisplayDirection.rawValue),
+            "color": [defaultColor.r, defaultColor.g, defaultColor.b, defaultColor.a],
+            "width": defaultLineWidth,
+            "style": defaultLineStyle.rawValue,
+            "fill": defaultFill
+        ]
+        UserDefaults.standard.set(d, forKey: defaultsKey)
+    }
 }
 
 // MARK: - Print settings

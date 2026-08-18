@@ -18,3 +18,6 @@ edkey.txt
 
 # macOS
 .DS_Store
+
+# WorkBuddy local project data (memory, runtime state) — never commit to the repo
+.workbuddy/

@@ -9,8 +9,24 @@ final class AppState {
     var recentFiles: [RecentFile] = []
     var preferences = Preferences()
     var pendingPasswordURL: URL?
+    /// Currently active document. `nil` falls back to the most recently opened one.
+    var selectedID: DocumentState.ID? = nil
+    /// Transient toast message (e.g. "已保存为默认设置"); cleared automatically.
+    var toastMessage: String? = nil
+    private var toastTask: Task<Void, Never>? = nil
 
     private let recentsKey = "meipdf.recentFiles"
+
+    // MARK: Toast
+
+    func showToast(_ message: String) {
+        toastMessage = message
+        toastTask?.cancel()
+        toastTask = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if !Task.isCancelled { toastMessage = nil }
+        }
+    }
 
     init() {
         loadRecents()
@@ -34,6 +50,7 @@ final class AppState {
                 return nil
             }
             documents.append(doc)
+            selectedID = doc.id
             addRecent(url)
             if secured { url.stopAccessingSecurityScopedResource() }
             return doc
@@ -53,6 +70,7 @@ final class AppState {
             let doc = try DocumentState(url: url, preferences: preferences)
             if doc.unlock(with: password) { doc.finishUnlock() }
             documents.append(doc)
+            selectedID = doc.id
             addRecent(url)
             return doc
         } catch {
@@ -61,8 +79,38 @@ final class AppState {
     }
 
     func close(_ doc: DocumentState) {
+        let wasSelected = (selectedID == doc.id)
         doc.persist()
         documents.removeAll { $0.id == doc.id }
+        if wasSelected {
+            selectedID = documents.last?.id
+        }
+    }
+
+    func closeOthers(keep id: DocumentState.ID) {
+        for d in documents where d.id != id {
+            d.persist()
+            documents.removeAll { $0.id == d.id }
+        }
+        selectedID = id
+    }
+
+    func closeAll() {
+        for d in documents { d.persist() }
+        documents.removeAll()
+        selectedID = nil
+    }
+
+    /// Reorder tabs: move the document identified by `sourceID` so it sits just
+    /// before `beforeID`. Drag-and-drop sorting in the top tab bar calls this.
+    func moveDocument(_ sourceID: DocumentState.ID, before beforeID: DocumentState.ID) {
+        guard sourceID != beforeID,
+              let from = documents.firstIndex(where: { $0.id == sourceID }),
+              let to = documents.firstIndex(where: { $0.id == beforeID }) else { return }
+        let doc = documents.remove(at: from)
+        var target = documents.firstIndex(where: { $0.id == beforeID }) ?? documents.endIndex
+        if from < to { target += 1 }
+        documents.insert(doc, at: min(target, documents.count))
     }
 
     func selectedDocument(id: DocumentState.ID?) -> DocumentState? {

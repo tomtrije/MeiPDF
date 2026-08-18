@@ -1,0 +1,65 @@
+/* 主菜单与系统菜单本地化（简体中文） */
+
+/* 应用菜单 */
+"MeiPDF" = "MeiPDF";
+"Services" = "服务";
+"Hide MeiPDF" = "隐藏 MeiPDF";
+"Hide Others" = "隐藏其他";
+"Show All" = "全部显示";
+"Quit MeiPDF" = "退出 MeiPDF";
+
+/* 标准菜单标题 */
+"File" = "文件";
+"Edit" = "编辑";
+"View" = "显示";
+"Window" = "窗口";
+"Help" = "帮助";
+
+/* 文件菜单 */
+"Close" = "关闭";
+"Close Window" = "关闭窗口";
+"Print…" = "打印…";
+"Page Setup…" = "页面设置…";
+
+/* 编辑菜单 */
+"Undo" = "撤销";
+"Redo" = "重做";
+"Cut" = "剪切";
+"Copy" = "拷贝";
+"Paste" = "粘贴";
+"Paste and Match Style" = "粘贴并匹配样式";
+"Delete" = "删除";
+"Select All" = "全选";
+"Find" = "查找";
+"Find…" = "查找…";
+"Find Next" = "查找下一个";
+"Find Previous" = "查找上一个";
+"Spelling" = "拼写";
+"Spelling and Grammar" = "拼写和语法";
+"Show Spelling and Grammar" = "显示拼写和语法";
+"Check Spelling" = "检查拼写";
+"Check Spelling While Typing" = "输入时检查拼写";
+"Check Grammar With Spelling" = "随拼写检查语法";
+"Substitutions" = "替换";
+"Transformations" = "转换";
+"Speech" = "语音";
+"Start Speaking" = "开始朗读";
+"Stop Speaking" = "停止朗读";
+
+/* 显示菜单 */
+"Enter Full Screen" = "进入全屏幕";
+"Exit Full Screen" = "退出全屏幕";
+"Show Tab Bar" = "显示标签页栏";
+"Show Sidebar" = "显示边栏";
+"Hide Sidebar" = "隐藏边栏";
+
+/* 窗口菜单 */
+"Minimize" = "最小化";
+"Zoom" = "缩放";
+"Minimize All" = "最小化全部";
+"Zoom All" = "缩放全部";
+"Bring All to Front" = "前置全部窗口";
+"Enter Full Screen" = "进入全屏幕";
+
+/* 帮助菜单 */
+"MeiPDF Help" = "MeiPDF 帮助";
