@@ -23,6 +23,15 @@ cp -R MeiPDF.app "$STAGE/MeiPDF.app"
 # Drag-to-Applications shortcut.
 ln -s /Applications "$STAGE/Applications"
 
+# Self-use helper: a double-clickable script that strips Gatekeeper quarantine so an
+# ad-hoc (unsigned) build can launch, plus a short README. Harmless when the app is
+# Developer-ID-signed and notarized.
+if [ -f install.command ]; then
+  cp install.command "$STAGE/install.command"
+  chmod +x "$STAGE/install.command"
+fi
+[ -f README.txt ] && cp README.txt "$STAGE/README.txt"
+
 hdiutil create -volname "MeiPDF ${VERSION}" \
     -srcfolder "$STAGE" \
     -ov -format UDZO \
