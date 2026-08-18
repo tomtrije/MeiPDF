@@ -1,0 +1,132 @@
+name: Release
+
+# Build a signed (or ad-hoc) MeiPDF .app, package it into a DMG, generate the
+# signed Sparkle appcast, and publish a GitHub Release with both as assets.
+#
+# Triggers:
+#   - push of a tag like v1.2.3  (recommended)
+#   - manual workflow_dispatch   (the tag v<version> must already exist)
+#
+# Secrets (all optional — without them you still get an ad-hoc DMG, but no
+# notarization and no signed appcast, so auto-update won't work):
+#   MACOS_SIGNING_CERT           base64 of a Developer ID Application .p12
+#   MACOS_SIGNING_CERT_PASSWORD  password for that .p12
+#   APPLE_ID                     your Apple ID email
+#   APPLE_APP_PASSWORD           app-specific password for notarization
+#   APPLE_TEAM_ID                your 10-char Apple team id
+#   SPARKLE_EDKEY                contents of sparkle/ed25519_private.key (base64 seed)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 1.0.0 (tag v<version> must already exist).'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-dmg:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "MEIPDF_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Building MeiPDF $VERSION"
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.swiftpm
+            .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Import signing certificate
+        if: ${{ secrets.MACOS_SIGNING_CERT != '' }}
+        env:
+          MACOS_SIGNING_CERT: ${{ secrets.MACOS_SIGNING_CERT }}
+          MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+        run: |
+          echo "$MACOS_SIGNING_CERT" | base64 -D -o cert.p12
+          security create-keychain -p "" build.keychain
+          security import cert.p12 -k build.keychain -P "$MACOS_SIGNING_CERT_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s build.keychain login.keychain
+          security unlock-keychain -p "" build.keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+          IDENTITY=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "Imported identity: $IDENTITY"
+
+      - name: Build app + DMG
+        run: bash build-dmg.sh
+
+      - name: Notarize DMG
+        if: ${{ secrets.MACOS_SIGNING_CERT != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG="MeiPDF-${MEIPDF_VERSION}.dmg"
+          xcrun notarytool submit "$DMG" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$DMG"
+
+      - name: Generate signed appcast
+        if: ${{ secrets.SPARKLE_EDKEY != '' }}
+        env:
+          SPARKLE_EDKEY: ${{ secrets.SPARKLE_EDKEY }}
+        run: |
+          printf '%s' "$SPARKLE_EDKEY" > edkey.txt
+          GEN=$(find .build -name generate_appcast | head -1)
+          PREFIX="https://github.com/${{ github.repository }}/releases/download/v${MEIPDF_VERSION}/"
+          rm -rf Updates && mkdir -p Updates
+          cp "MeiPDF-${MEIPDF_VERSION}.dmg" Updates/
+          "$GEN" --ed-key-file edkey.txt --download-url-prefix "$PREFIX" Updates/
+          cp Updates/appcast.xml appcast.xml
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${MEIPDF_VERSION}"
+          if ! git ls-remote --exit-code origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG not found. Push it first: git tag $TAG && git push origin $TAG" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            exit 0
+          fi
+          FILES=("MeiPDF-${MEIPDF_VERSION}.dmg")
+          [ -f appcast.xml ] && FILES+=("appcast.xml")
+          gh release create "$TAG" "${FILES[@]}" \
+            --repo "${{ github.repository }}" \
+            --title "MeiPDF ${MEIPDF_VERSION}" \
+            --generate-notes \
+            --latest

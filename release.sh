@@ -1,50 +1,51 @@
 #!/bin/bash
-# Release workflow for MeiPDF:
-#   1. build the DMG (build-dmg.sh)
-#   2. create a GitHub release and upload the DMG (gh)
-#   3. generate + sign the appcast (Sparkle generate_appcast) with the release download URL
-#   4. stage appcast.xml at repo root (referenced by SUFeedURL)
+# Local release helper (alternative to the GitHub Actions workflow).
+# Builds the DMG, generates the signed Sparkle appcast, and creates/updates the
+# GitHub release (uploading the DMG + appcast.xml).
 #
-# Requires: gh (authenticated), and sparkle/ed25519_private.key (gitignored).
+# Requires: gh authenticated, and sparkle/ed25519_private.key (gitignored) present.
+# The appcast enclosure URL points at the release download dir; SUFeedURL in Info.plist
+# points at releases/latest/download/appcast.xml so every release serves the newest.
 set -e
 cd "$(dirname "$0")"
+source "$(dirname "$0")/version.sh"
 
 REPO="tomtrije/MeiPDF"
-VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+VERSION="$(resolve_version)"
+export MEIPDF_VERSION="$VERSION"
 TAG="v${VERSION}"
 DMG="MeiPDF-${VERSION}.dmg"
 
-echo "==> [1/4] Building DMG"
+echo "==> [1/3] Building DMG"
 bash build-dmg.sh
 
-echo "==> [2/4] Creating GitHub release ${TAG} and uploading ${DMG}"
-gh release create "$TAG" "$DMG" \
+echo "==> [2/3] Generating signed appcast"
+if [ ! -f sparkle/ed25519_private.key ]; then
+  echo "!! sparkle/ed25519_private.key missing (needed to sign the appcast)." >&2
+  exit 1
+fi
+GEN=$(find .build -name generate_appcast | head -1)
+if [ -z "$GEN" ]; then
+  echo "!! generate_appcast not found; run 'swift package resolve' first." >&2
+  exit 1
+fi
+PREFIX="https://github.com/${REPO}/releases/download/${TAG}/"
+rm -rf Updates && mkdir -p Updates
+cp "$DMG" Updates/
+"$GEN" --ed-key-file sparkle/ed25519_private.key \
+       --download-url-prefix "$PREFIX" \
+       Updates/
+cp Updates/appcast.xml appcast.xml
+
+echo "==> [3/3] Creating/updating release ${TAG}"
+FILES=("$DMG" appcast.xml)
+if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+  gh release upload "$TAG" "${FILES[@]}" --repo "$REPO" --clobber
+else
+  gh release create "$TAG" "${FILES[@]}" \
     --repo "$REPO" \
     --title "MeiPDF ${VERSION}" \
     --notes "MeiPDF ${VERSION} 发布" \
     --latest
-
-DOWNLOAD_PREFIX="https://github.com/${REPO}/releases/download/${TAG}/"
-
-# Locate the Sparkle generate_appcast tool.
-GEN=$(find .build -name generate_appcast | head -1)
-if [ -z "$GEN" ]; then
-    echo "!! generate_appcast not found; run 'swift package resolve' first." >&2
-    exit 1
 fi
-
-echo "==> [3/4] Generating + signing appcast (download prefix: $DOWNLOAD_PREFIX)"
-rm -rf Updates
-mkdir -p Updates
-cp "$DMG" Updates/
-"$GEN" --ed-key-file sparkle/ed25519_private.key \
-       --download-url-prefix "$DOWNLOAD_PREFIX" \
-       Updates/
-
-echo "==> [4/4] Staging appcast.xml at repo root"
-cp Updates/appcast.xml appcast.xml
-
-echo
-echo "Done. Review appcast.xml, then:"
-echo "    git add appcast.xml && git commit -m \"Release ${VERSION} appcast\" && git push"
-echo "The DMG is already uploaded to the ${TAG} release."
+echo "Done. DMG + signed appcast uploaded to release ${TAG}."

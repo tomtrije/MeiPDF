@@ -1,8 +1,18 @@
 #!/bin/bash
 # Build MeiPDF as a runnable .app bundle (no Xcode required), embedding Sparkle
 # for auto-update.
+#
+# Env:
+#   MEIPDF_VERSION   version string (default: resolved via version.sh)
+#   SIGN_IDENTITY    codesign identity. If unset/'-', ad-hoc signs. Set to e.g.
+#                    "Developer ID Application: <name> (TEAMID)" for distribution.
 set -e
 cd "$(dirname "$0")"
+source "$(dirname "$0")/version.sh"
+
+VERSION="$(resolve_version)"
+export MEIPDF_VERSION="$VERSION"
+echo "==> Version: $VERSION"
 
 echo "==> Building (release) with swift build"
 swift build -c release --disable-sandbox
@@ -13,6 +23,10 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 
 cp .build/release/MeiPDF "$APP/Contents/MacOS/MeiPDF"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+
+# Inject the resolved version into the embedded Info.plist.
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
 
 # Locate the resolved Sparkle.framework (macOS slice of the XCFramework) and embed it.
 SPARKLE_FW=$(find .build -path "*Sparkle.xcframework/macos-*" -name "Sparkle.framework" | head -1)
@@ -28,10 +42,17 @@ cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"
 install_name_tool -add_rpath "@executable_path/../Frameworks" \
     "$APP/Contents/MacOS/MeiPDF" 2>/dev/null || echo "  (rpath already present)"
 
-# Ad-hoc code-sign so macOS launches it without Gatekeeper warnings.
-# --deep also signs the embedded Sparkle.framework.
+# Code-sign. Ad-hoc by default; with SIGN_IDENTITY set, use hardened runtime for notarization.
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 if command -v codesign >/dev/null 2>&1; then
+  if [ "$SIGN_IDENTITY" = "-" ]; then
+    echo "==> Ad-hoc signing $APP"
     codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "  (codesign skipped)"
+  else
+    echo "==> Signing $APP with $SIGN_IDENTITY"
+    codesign --force --deep --sign "$SIGN_IDENTITY" --options runtime "$APP" >/dev/null 2>&1 \
+      || { echo "!! codesign failed" >&2; exit 1; }
+  fi
 fi
 
 echo "==> Built $APP"

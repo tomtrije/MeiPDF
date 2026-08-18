@@ -42,7 +42,7 @@
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/tomtrije/MeiPDF/main/appcast.xml</string>
+	<string>https://github.com/tomtrije/MeiPDF/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>jJL+KA04ZO9bSttC7YqoiiY9T25GnUeY3uQq9J++aSo=</string>
 </dict>
