@@ -203,6 +203,15 @@ final class DocumentState: Identifiable {
         let sy = view.bounds.height / pageRect.height
         setScale(min(sx, sy))
     }
+    /// Fit the page height to the viewport (Preview's "适应高度" — only the vertical
+    /// extent fills the window; width may overflow and scroll horizontally).
+    func fitHeight() {
+        guard let view = pdfView, let page = pdfDocument.page(at: currentPage) else { return }
+        view.autoScales = false
+        let pageRect = page.bounds(for: .mediaBox)
+        guard pageRect.height > 0 else { return }
+        setScale(view.bounds.height / pageRect.height)
+    }
 
     // MARK: Bookmarks (page-level)
 
@@ -643,6 +652,17 @@ final class DocumentState: Identifiable {
             let name = "\(base)_p\(i + 1).png"
             exportPagePNG(to: folder.appendingPathComponent(name), index: i)
         }
+    }
+
+    // MARK: Export flattened PDF
+
+    /// Write the current document (including all in-memory annotations we added to
+    /// its pages) to a NEW file. Original is never touched — this is an export, not
+    /// an edit, consistent with MeiPDF's "viewing-only" scope.
+    @discardableResult
+    func exportPDF(to url: URL) -> Bool {
+        guard !isLocked else { return false }
+        return pdfDocument.write(to: url)
     }
 
     // MARK: Page image (for slideshow / inspector)

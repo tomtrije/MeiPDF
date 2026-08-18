@@ -62,8 +62,6 @@ struct MeiPDFApp: App {
                     .keyboardShortcut("=", modifiers: .command)
                 Button("缩小") { activeDoc()?.zoomOut() }
                     .keyboardShortcut("-", modifiers: .command)
-                Button("实际大小") { activeDoc()?.actualSize() }
-                    .keyboardShortcut("0", modifiers: .command)
                 Divider()
                 Button("书签当前页") { if let d = activeDoc() { d.toggleBookmark(d.currentPage) } }
                     .keyboardShortcut("d", modifiers: .command)
@@ -91,14 +89,41 @@ struct MeiPDFApp: App {
                 Button("朗读选区") { activeDoc()?.speakSelection() }
                 Button("停止朗读") { activeDoc()?.stopSpeaking() }
             }
+            CommandMenu("前往") {
+                Button("第一页") { activeDoc()?.firstPage() }
+                    .keyboardShortcut("↑", modifiers: .command)
+                Button("最后一页") { activeDoc()?.lastPage() }
+                    .keyboardShortcut("↓", modifiers: .command)
+                Divider()
+                Button("跳到页…") { jumpToPageDialog() }
+            }
             CommandMenu("视图") {
                 Button("进入全屏") { toggleFullScreen() }
                     .keyboardShortcut("f", modifiers: [.command, .control])
+                Divider()
+                Button("适应宽度") { activeDoc()?.fitWidth() }
+                Button("适应页面") { activeDoc()?.fitPage() }
+                Button("适应高度") { activeDoc()?.fitHeight() }
+                Button("实际大小") { activeDoc()?.actualSize() }
+                    .keyboardShortcut("0", modifiers: .command)
+                Menu("缩放比例") {
+                    ForEach([50, 75, 100, 125, 150, 200, 300, 400], id: \.self) { pct in
+                        Button("\(pct)%") { activeDoc()?.setScale(CGFloat(pct) / 100) }
+                    }
+                }
+                Divider()
+                Menu("滚动方向") {
+                    Button("纵向") { setDirection(.vertical) }
+                    Button("横向") { setDirection(.horizontal) }
+                }
+                Divider()
                 Button("显示检查器") { showInspector() }
                     .keyboardShortcut("i", modifiers: .command)
                 Button("开始幻灯片放映") { startSlideshow() }
             }
             CommandMenu("导出") {
+                Button("导出为 PDF…") { exportPDF() }
+                Divider()
                 Button("导出本页为 PNG…") { exportCurrentPageImage() }
                 Button("导出全部页面为 PNG…") { exportAllImages() }
             }
@@ -180,6 +205,49 @@ struct MeiPDFApp: App {
         panel.prompt = "选择文件夹"
         if panel.runModal() == .OK, let url = panel.url {
             d.exportAllPagesPNG(to: url)
+        }
+    }
+
+    private func exportPDF() {
+        guard let d = activeDoc() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType.pdf]
+        panel.nameFieldStringValue = d.fileName
+        if panel.runModal() == .OK, let url = panel.url {
+            if d.exportPDF(to: url) {
+                appState.showToast("已导出 PDF（含标注）")
+            } else {
+                appState.showToast("导出失败")
+            }
+        }
+    }
+
+    private func setDirection(_ dir: PDFDisplayDirection) {
+        guard let d = activeDoc() else { return }
+        d.displayDirection = dir
+        d.pdfView?.displayDirection = dir
+        d.pdfView?.layoutDocumentView()
+        d.persist()
+    }
+
+    /// "跳到页…" — a small modal input. Reuses `goToPage` (already two-way synced
+    /// with the toolbar page field and the KVO current-page observer).
+    private func jumpToPageDialog() {
+        guard let d = activeDoc() else { return }
+        let alert = NSAlert()
+        alert.messageText = "跳到页"
+        alert.informativeText = "输入页码（1 – \(d.pageCount)）"
+        let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        tf.placeholderString = "页码"
+        tf.stringValue = "\(d.currentPage + 1)"
+        tf.alignment = .center
+        alert.accessoryView = tf
+        alert.addButton(withTitle: "跳转")
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn,
+           let n = Int(tf.stringValue.trimmingCharacters(in: .whitespaces)),
+           n >= 1, n <= d.pageCount {
+            d.goToPage(n - 1)
         }
     }
 }

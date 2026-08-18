@@ -43,7 +43,14 @@ struct BrowserToolbar: ToolbarContent {
             Menu {
                 Button("适应宽度") { doc?.fitWidth() }
                 Button("适应页面") { doc?.fitPage() }
+                Button("适应高度") { doc?.fitHeight() }
                 Button("实际大小") { doc?.actualSize() }
+                Divider()
+                Menu("缩放比例") {
+                    ForEach([50, 75, 100, 125, 150, 200, 300, 400], id: \.self) { pct in
+                        Button("\(pct)%") { doc?.setScale(CGFloat(pct) / 100) }
+                    }
+                }
             } label: { Image(systemName: "magnifyingglass") }
                 .help("缩放模式")
         }
