@@ -15,16 +15,17 @@ final class ImageStampAnnotation: PDFAnnotation {
     required init?(coder: NSCoder) { super.init(coder: coder) }
 
     override func draw(with box: PDFDisplayBox, in context: CGContext) {
-        super.draw(with: box, in: context)
+        // Do NOT call super — the default stamp rendering draws a border frame
+        // around the annotation (the "wireframe" that showed up on the page).
         guard let img = image,
               let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
         let r = self.bounds
         context.saveGState()
-        // Translate to the top-left of the bounds, then flip Y so the image (which
-        // is stored top-left / Y-down) draws upright inside the (Y-up) PDF box.
-        context.translateBy(x: r.minX, y: r.maxY)
-        context.scaleBy(x: 1, y: -1)
-        context.draw(cg, in: CGRect(x: 0, y: 0, width: r.width, height: r.height))
+        // The PDFKit draw context is already set up in page coordinates where a
+        // direct image draw renders upright — the earlier manual Y-flip inverted
+        // the signature. The rect below is identical to what the old transform
+        // produced; only the content orientation changes (now correct).
+        context.draw(cg, in: CGRect(x: r.minX, y: r.minY, width: r.width, height: r.height))
         context.restoreGState()
     }
 }
@@ -360,34 +361,47 @@ final class PDFViewCoordinator: NSObject, PDFViewDelegate {
     var doc: DocumentState
     /// Retained targets for the PDF context-menu items so their closures stay alive.
     var contextTargets: [Any] = []
-    /// KVO token for the live `currentPage` sync. More reliable than the delegate
-    /// callback alone across PDFKit versions / scroll styles, and it also catches
-    /// page changes driven by thumbnails, search jumps, and the toolbar page box.
+    /// KVO token for the live `currentPage` sync.
     var pageObservation: NSKeyValueObservation?
+    /// NotificationCenter observer for `.PDFViewPageChanged` (belt-and-braces — the
+    /// delegate method alone was never called because its selector name was wrong).
+    var pageNotificationObserver: NSObjectProtocol?
     init(_ doc: DocumentState) { self.doc = doc }
 
     /// Keep `doc.currentPage` in lock-step with whatever page PDFView is showing.
-    func startObserving(_ view: MeiPDFView) {
-        pageObservation = view.observe(\.currentPage, options: [.new]) { [weak self, weak view] _, _ in
-            guard let view else { return }
-            Task { @MainActor in
-                guard let self, let document = view.document,
-                      let page = view.currentPage else { return }
-                let idx = document.index(for: page)
-                if self.doc.currentPage != idx {
-                    self.doc.currentPage = idx
-                    if self.doc.preferences.rememberLastPosition { self.doc.persist() }
-                }
-            }
-        }
-    }
-
-    func pdfViewCurrentPageDidChange(_ sender: PDFView) {
-        guard let page = sender.currentPage, let idx = sender.document?.index(for: page) else { return }
+    private func syncCurrentPage(from view: PDFView) {
+        guard let document = view.document, let page = view.currentPage else { return }
+        let idx = document.index(for: page)
         if doc.currentPage != idx {
             doc.currentPage = idx
             if doc.preferences.rememberLastPosition { doc.persist() }
         }
+    }
+
+    func startObserving(_ view: MeiPDFView) {
+        pageObservation = view.observe(\.currentPage, options: [.new]) { [weak self, weak view] _, _ in
+            guard let view else { return }
+            Task { @MainActor in
+                guard let self else { return }
+                self.syncCurrentPage(from: view)
+            }
+        }
+        pageNotificationObserver = NotificationCenter.default.addObserver(
+            forName: .PDFViewPageChanged, object: view, queue: .main
+        ) { [weak self, weak view] _ in
+            guard let view else { return }
+            Task { @MainActor in
+                guard let self else { return }
+                self.syncCurrentPage(from: view)
+            }
+        }
+    }
+
+    /// The real PDFViewDelegate selector for page changes is `pdfViewPageChanged(_:)`.
+    /// (An earlier build implemented a non-existent `pdfViewCurrentPageDidChange`,
+    /// which silently never fired — one reason the page readout stopped updating.)
+    func pdfViewPageChanged(_ sender: PDFView) {
+        syncCurrentPage(from: sender)
     }
 }
 

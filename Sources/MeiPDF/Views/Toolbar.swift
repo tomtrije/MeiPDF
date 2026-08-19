@@ -15,31 +15,34 @@ struct BrowserToolbar: ToolbarContent {
     private var doc: DocumentState? { appState.selectedDocument(id: appState.selectedID) }
 
     var body: some ToolbarContent {
+        // NOTE: buttons use `Label` (not bare `Image`) so the toolbar's native
+        // right-click display modes "仅图标 / 图标和文本" actually toggle the text.
         ToolbarItem(placement: .navigation) {
             Button {
                 showSidebar.toggle()
                 if showSidebar { sidebarTab = .thumbnails }
-            } label: { Image(systemName: "sidebar.left") }
+            } label: { Label("侧栏", systemImage: "sidebar.left") }
                 .help("侧栏")
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
-            Button { doc?.previousPage() } label: { Image(systemName: "chevron.left") }.help("上一页")
+            Button { doc?.previousPage() } label: { Label("上一页", systemImage: "chevron.left") }.help("上一页")
             if let d = doc { PageJumpField(doc: d) }
             Text("/ \(doc?.pageCount ?? 0)").foregroundStyle(.secondary)
-            Button { doc?.nextPage() } label: { Image(systemName: "chevron.right") }.help("下一页")
+            Button { doc?.nextPage() } label: { Label("下一页", systemImage: "chevron.right") }.help("下一页")
             Button {
                 if let d = doc { d.toggleBookmark(d.currentPage) }
             } label: {
-                Image(systemName: (doc?.isBookmarked(doc?.currentPage ?? 0) ?? false) ? "bookmark.fill" : "bookmark")
+                Label("书签当前页",
+                      systemImage: (doc?.isBookmarked(doc?.currentPage ?? 0) ?? false) ? "bookmark.fill" : "bookmark")
             }
             .help("书签当前页")
         }
 
         ToolbarItemGroup(placement: .automatic) {
-            Button { doc?.zoomOut() } label: { Image(systemName: "minus.magnifyingglass") }.help("缩小")
+            Button { doc?.zoomOut() } label: { Label("缩小", systemImage: "minus.magnifyingglass") }.help("缩小")
             Text(String(format: "%.0f%%", (doc?.scaleFactor ?? 1) * 100)).foregroundStyle(.secondary).frame(minWidth: 44)
-            Button { doc?.zoomIn() } label: { Image(systemName: "plus.magnifyingglass") }.help("放大")
+            Button { doc?.zoomIn() } label: { Label("放大", systemImage: "plus.magnifyingglass") }.help("放大")
             Menu {
                 Button("适应宽度") { doc?.fitWidth() }
                 Button("适应页面") { doc?.fitPage() }
@@ -95,7 +98,7 @@ struct BrowserToolbar: ToolbarContent {
             Button {
                 doc?.saveAsDefault()
                 appState.showToast("已保存为默认设置")
-            } label: { Image(systemName: "checkmark.seal") }
+            } label: { Label("存为默认", systemImage: "checkmark.seal") }
                 .help("将当前设置存为默认")
             ConfigStatusButton(appState: appState)
         }
@@ -111,7 +114,7 @@ struct BrowserToolbar: ToolbarContent {
         ToolbarItem(placement: .confirmationAction) {
             Button {
                 showPrint = true
-            } label: { Image(systemName: "printer") }
+            } label: { Label("打印", systemImage: "printer") }
                 .help("打印")
         }
     }
@@ -255,7 +258,7 @@ struct AnnotationMenu: View {
         Button {
             showPopover.toggle()
         } label: {
-            Image(systemName: (doc?.activeTool).map { icon(for: $0) } ?? "highlighter")
+            Label("标注工具", systemImage: (doc?.activeTool).map { icon(for: $0) } ?? "highlighter")
         }
         .help("标注工具")
         .popover(isPresented: $showPopover) {
@@ -387,7 +390,7 @@ struct ConfigStatusButton: View {
     var body: some View {
         Button {
             show.toggle()
-        } label: { Image(systemName: "slider.horizontal.3") }
+        } label: { Label("配置与状态", systemImage: "slider.horizontal.3") }
             .help("查看配置与状态")
             .popover(isPresented: $show) {
                 if let d = doc {
