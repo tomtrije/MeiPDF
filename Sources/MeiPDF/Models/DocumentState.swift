@@ -26,6 +26,10 @@ final class DocumentState: Identifiable {
     /// first `updateNSView`, when the view's bounds are known).
     var defaultZoomApplied: Bool = false
 
+    /// Back/forward navigation history of explicitly-jumped pages (see `goToPage`).
+    private var navHistory: [Int] = []
+    private var navPos: Int = -1
+
     // MARK: 配置（影响功能 / 渲染、可持久化；重新打开文档时恢复）
     // ---- file-level viewing CONFIG (restored on reopen) ----
     var displayMode: PDFDisplayMode
@@ -49,11 +53,18 @@ final class DocumentState: Identifiable {
     // ---- user's own (non-destructive) annotations (CONFIG) ----
     var annotations: [Annotation] = []
 
+    /// When `false`, markup annotations (highlight/underline/strike/note/shapes/…)
+    /// are hidden — mirrors Preview's "显示高亮与备注" toggle (view-only, non-destructive).
+    var showAnnotations: Bool = true
+
     weak var pdfView: MeiPDFView?
 
     // search
     var searchMatches: [PDFSelection] = []
     var searchText: String = ""
+    /// Index into `searchMatches` of the currently shown result (shared with the
+    /// toolbar search field and the Edit-menu find commands).
+    var searchResultIndex: Int = 0
 
     let preferences: Preferences
 
@@ -76,6 +87,9 @@ final class DocumentState: Identifiable {
             loadMeta()
             applyStartPage()
         }
+        // Seed the back/forward history with the page we opened on.
+        navHistory = [currentPage]
+        navPos = 0
     }
 
     /// Honour the "start page" preference (cover / last-read / first bookmark).
@@ -165,12 +179,37 @@ final class DocumentState: Identifiable {
 
     var pageCount: Int { pdfDocument.pageCount }
 
-    func goToPage(_ index: Int) {
+    func goToPage(_ index: Int, record: Bool = true) {
         guard index >= 0, index < pdfDocument.pageCount else { return }
-        if let page = pdfDocument.page(at: index) {
-            pdfView?.go(to: page)
-            currentPage = index
+        guard let page = pdfDocument.page(at: index) else { return }
+        pdfView?.go(to: page)
+        currentPage = index
+        if record {
+            // Drop any "forward" branch, then append the new page if it differs.
+            if navPos < navHistory.count - 1 {
+                navHistory.removeSubrange((navPos + 1)...)
+            }
+            if navHistory.last != index {
+                navHistory.append(index)
+                navPos = navHistory.count - 1
+            }
         }
+    }
+
+    // MARK: Back / Forward (前往 > 后退 / 前进)
+
+    var canGoBack: Bool { navPos > 0 }
+    var canGoForward: Bool { navPos < navHistory.count - 1 }
+
+    func goBack() {
+        guard canGoBack else { return }
+        navPos -= 1
+        goToPage(navHistory[navPos], record: false)
+    }
+    func goForward() {
+        guard canGoForward else { return }
+        navPos += 1
+        goToPage(navHistory[navPos], record: false)
     }
     func nextPage() { pdfView?.goToNextPage(nil) }
     func previousPage() { pdfView?.goToPreviousPage(nil) }
@@ -288,7 +327,7 @@ final class DocumentState: Identifiable {
             if let data = a.imageData, let img = NSImage(data: data) {
                 let ann = ImageStampAnnotation(bounds: b, image: img,
                                                userName: "MeiPDF:" + a.id.uuidString)
-                ann.shouldDisplay = true
+                ann.shouldDisplay = showAnnotations
                 return ann
             }
             return nil
@@ -351,7 +390,7 @@ final class DocumentState: Identifiable {
         case .signature:
             break // handled earlier (returns an ImageStampAnnotation before this switch)
         }
-        ann.shouldDisplay = true
+        ann.shouldDisplay = showAnnotations
         _ = page
         return ann
     }
@@ -433,6 +472,29 @@ final class DocumentState: Identifiable {
     func removeNativeAnnotation(pageIndex: Int, annotation: PDFAnnotation) {
         guard !isLocked else { return }
         pdfDocument.page(at: pageIndex)?.removeAnnotation(annotation)
+    }
+
+    // MARK: Annotation visibility (view-only)
+
+    /// Show or hide all markup annotations (highlight / underline / strike / note /
+    /// shapes / ink / text / stamp). Mirrors Preview's "显示高亮与备注". Links, outlines
+    /// and widgets are left alone. Non-destructive — never written back to the file.
+    func setAnnotationsVisible(_ visible: Bool) {
+        showAnnotations = visible
+        for i in 0..<pageCount {
+            guard let page = pdfDocument.page(at: i) else { continue }
+            for ann in page.annotations where isMarkupAnnotation(ann) {
+                ann.shouldDisplay = visible
+            }
+        }
+        pdfView?.layoutDocumentView()
+    }
+    func toggleAnnotationsVisible() { setAnnotationsVisible(!showAnnotations) }
+
+    private func isMarkupAnnotation(_ ann: PDFAnnotation) -> Bool {
+        guard let t = ann.type else { return false }
+        return ["Highlight", "Underline", "StrikeOut", "Square", "Circle",
+                "Line", "Ink", "FreeText", "Text", "Stamp"].contains(t)
     }
 
     /// Build a text-mark annotation (highlight/underline/strike) from current selection.
@@ -599,6 +661,7 @@ final class DocumentState: Identifiable {
     func search(_ text: String, caseSensitive: Bool, wholeWord: Bool) {
         searchText = text
         searchMatches.removeAll()
+        searchResultIndex = 0
         guard !text.isEmpty, !isLocked else { pdfView?.highlightedSelections = nil; return }
         if wholeWord {
             let pattern = "\\b\(NSRegularExpression.escapedPattern(for: text))\\b"
@@ -618,6 +681,19 @@ final class DocumentState: Identifiable {
         let sel = searchMatches[index]
         pdfView?.setCurrentSelection(sel, animate: true)
         if let page = sel.pages.first { pdfView?.go(to: page) }
+    }
+
+    /// Advance / rewind the active search result (used by the toolbar arrows and the
+    /// Edit-menu 查找下一个 / 查找上一个, ⌘G / ⌘⇧G). Wraps around.
+    func searchNext() {
+        guard !searchMatches.isEmpty else { return }
+        searchResultIndex = (searchResultIndex + 1) % searchMatches.count
+        goToSearchResult(searchResultIndex)
+    }
+    func searchPrevious() {
+        guard !searchMatches.isEmpty else { return }
+        searchResultIndex = (searchResultIndex - 1 + searchMatches.count) % searchMatches.count
+        goToSearchResult(searchResultIndex)
     }
 
     // MARK: Snapshot

@@ -4,8 +4,6 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppState.self) private var appState
-    @State private var showSidebar = true
-    @State private var sidebarTab: SidebarTab = .thumbnails
     @State private var showPrint = false
     @State private var showPassword = false
     @State private var passwordInput = ""
@@ -26,11 +24,11 @@ struct ContentView: View {
         @Bindable var appState = appState
         VStack(spacing: 0) {
             if let doc {
-                TopTabBar(selectedID: $appState.selectedID, showSidebar: $showSidebar)
+                TopTabBar(selectedID: $appState.selectedID, showSidebar: $appState.showSidebar)
                 Divider()
                 HStack(spacing: 0) {
-                    if showSidebar {
-                        Sidebar(doc: doc, tab: $sidebarTab)
+                    if appState.showSidebar {
+                        Sidebar(doc: doc, tab: $appState.sidebarTab)
                             .frame(width: 260)
                             .id(doc.id)
                         Divider()
@@ -42,12 +40,12 @@ struct ContentView: View {
                 Divider()
                 StatusBar(doc: doc)
             } else {
-                WelcomeView(showSidebar: $showSidebar)
+                WelcomeView(showSidebar: $appState.showSidebar)
             }
         }
         .toolbar {
             if appState.selectedDocument(id: appState.selectedID) != nil {
-                BrowserToolbar(appState: appState, showSidebar: $showSidebar, sidebarTab: $sidebarTab,
+                BrowserToolbar(appState: appState, showSidebar: $appState.showSidebar, sidebarTab: $appState.sidebarTab,
                                showPrint: $showPrint)
             }
         }

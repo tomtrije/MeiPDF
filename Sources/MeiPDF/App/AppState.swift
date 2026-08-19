@@ -27,6 +27,14 @@ final class AppState {
     /// Whether the signature-capture sheet is presented (set by the 签名 tool).
     var showSignatureCapture: Bool = false
 
+    // MARK: Sidebar (shared between the content view and the View menu)
+    /// Whether the left sidebar (缩略图/目录/书签/标注) is visible.
+    var showSidebar: Bool = true
+    /// Which sidebar tab is active.
+    var sidebarTab: SidebarTab = .thumbnails
+    /// Set by the Edit menu's "查找…" (⌘F) to focus the toolbar search field.
+    var focusSearchRequested: Bool = false
+
     private let recentsKey = "meipdf.recentFiles"
 
     // MARK: Toast

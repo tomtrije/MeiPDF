@@ -52,11 +52,17 @@ struct MeiPDFApp: App {
                     }
                 }
             }
+            CommandMenu("编辑") {
+                Button("查找…") { appState.focusSearchRequested = true }
+                    .keyboardShortcut("f", modifiers: .command)
+                Button("查找下一个") { activeDoc()?.searchNext() }
+                    .keyboardShortcut("g", modifiers: .command)
+                Button("查找上一个") { activeDoc()?.searchPrevious() }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+            }
             CommandMenu("阅读") {
                 Button("上一页") { activeDoc()?.previousPage() }
-                    .keyboardShortcut("[", modifiers: .command)
                 Button("下一页") { activeDoc()?.nextPage() }
-                    .keyboardShortcut("]", modifiers: .command)
                 Divider()
                 Button("放大") { activeDoc()?.zoomIn() }
                     .keyboardShortcut("=", modifiers: .command)
@@ -88,8 +94,18 @@ struct MeiPDFApp: App {
                 Button("朗读本页") { activeDoc()?.speakPage() }
                 Button("朗读选区") { activeDoc()?.speakSelection() }
                 Button("停止朗读") { activeDoc()?.stopSpeaking() }
+                Divider()
+                Button("签名…") { appState.showSignatureCapture = true }
+                    .keyboardShortcut("s", modifiers: [.command, .option])
+                Button("复制本页图像") { activeDoc()?.copyPageImage() }
+                Button("共享本页图像…") { shareCurrentPageImage() }
             }
             CommandMenu("前往") {
+                Button("后退") { activeDoc()?.goBack() }
+                    .keyboardShortcut("[", modifiers: .command)
+                Button("前进") { activeDoc()?.goForward() }
+                    .keyboardShortcut("]", modifiers: .command)
+                Divider()
                 Button("第一页") { activeDoc()?.firstPage() }
                     .keyboardShortcut("↑", modifiers: .command)
                 Button("最后一页") { activeDoc()?.lastPage() }
@@ -113,6 +129,23 @@ struct MeiPDFApp: App {
             CommandMenu("视图") {
                 Button("进入全屏") { toggleFullScreen() }
                     .keyboardShortcut("f", modifiers: [.command, .control])
+                Divider()
+                Button(appState.showSidebar ? "隐藏边栏" : "显示边栏") { appState.showSidebar.toggle() }
+                Menu("边栏") {
+                    Button("缩略图") { appState.showSidebar = true; appState.sidebarTab = .thumbnails }
+                    Button("目录") { appState.showSidebar = true; appState.sidebarTab = .outline }
+                    Button("书签") { appState.showSidebar = true; appState.sidebarTab = .bookmarks }
+                    Button("标注") { appState.showSidebar = true; appState.sidebarTab = .annotations }
+                }
+                Divider()
+                Button {
+                    if let d = activeDoc() { d.toggleAnnotationsVisible() }
+                } label: {
+                    HStack {
+                        Text("显示高亮与备注")
+                        if activeDoc()?.showAnnotations == true { Image(systemName: "checkmark") }
+                    }
+                }
                 Divider()
                 Button("适应宽度") { activeDoc()?.fitWidth() }
                 Button("适应页面") { activeDoc()?.fitPage() }
@@ -140,13 +173,6 @@ struct MeiPDFApp: App {
                 Divider()
                 Button("导出本页为 PNG…") { exportCurrentPageImage() }
                 Button("导出全部页面为 PNG…") { exportAllImages() }
-            }
-            CommandMenu("工具") {
-                Button("签名…") { appState.showSignatureCapture = true }
-                    .keyboardShortcut("s", modifiers: [.command, .option])
-                Divider()
-                Button("复制本页图像") { activeDoc()?.copyPageImage() }
-                Button("共享本页图像…") { shareCurrentPageImage() }
             }
         }
         Settings {

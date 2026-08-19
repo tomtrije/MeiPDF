@@ -166,6 +166,9 @@ struct PageJumpField: View {
 struct SearchField: NSViewRepresentable {
     @Binding var text: String
     var onTextChange: () -> Void
+    /// When set `true` (e.g. by the Edit menu's 查找… ⌘F), the field becomes the
+    /// first responder; it is then reset to `false` by `updateNSView`.
+    var focus: Binding<Bool>? = nil
 
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         var parent: SearchField
@@ -191,23 +194,26 @@ struct SearchField: NSViewRepresentable {
     func updateNSView(_ nsView: NSSearchField, context: Context) {
         context.coordinator.parent = self
         if nsView.stringValue != text { nsView.stringValue = text }
+        if focus?.wrappedValue == true {
+            nsView.window?.makeFirstResponder(nsView)
+            focus?.wrappedValue = false
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 }
 
 struct SearchBar: View {
-    let appState: AppState
+    @Bindable var appState: AppState
     /// Resolve the active document live (see BrowserToolbar for why this matters).
     private var doc: DocumentState? { appState.selectedDocument(id: appState.selectedID) }
     @State private var text: String = ""
     @State private var caseSensitive = false
     @State private var wholeWord = false
-    @State private var resultIndex = 0
 
     var body: some View {
         HStack(spacing: 8) {
-            SearchField(text: $text, onTextChange: run)
+            SearchField(text: $text, onTextChange: run, focus: $appState.focusSearchRequested)
                 .frame(width: 170)
             Menu {
                 Toggle("区分大小写", isOn: $caseSensitive)
@@ -221,7 +227,7 @@ struct SearchBar: View {
                     .help("上一个")
                 Button { step(1) } label: { Image(systemName: "chevron.down") }
                     .help("下一个")
-                Text("\(doc?.searchMatches.isEmpty ?? true ? 0 : resultIndex + 1)/\(doc?.searchMatches.count ?? 0)")
+                Text("\(doc?.searchMatches.isEmpty ?? true ? 0 : (doc?.searchResultIndex ?? 0) + 1)/\(doc?.searchMatches.count ?? 0)")
                     .foregroundStyle(.secondary)
             }
         }
@@ -229,14 +235,11 @@ struct SearchBar: View {
 
     private func run() {
         doc?.search(text, caseSensitive: caseSensitive, wholeWord: wholeWord)
-        resultIndex = 0
         if !(doc?.searchMatches.isEmpty ?? true) { doc?.goToSearchResult(0) }
     }
 
     private func step(_ dir: Int) {
-        guard let matches = doc?.searchMatches, !matches.isEmpty else { return }
-        resultIndex = (resultIndex + dir + matches.count) % matches.count
-        doc?.goToSearchResult(resultIndex)
+        if dir > 0 { doc?.searchNext() } else { doc?.searchPrevious() }
     }
 }
 
