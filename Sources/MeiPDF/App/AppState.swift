@@ -24,6 +24,8 @@ final class AppState {
     }
     /// Document the Slideshow window was launched on (captured at launch time).
     var slideshowDocID: DocumentState.ID? = nil
+    /// Whether the signature-capture sheet is presented (set by the 签名 tool).
+    var showSignatureCapture: Bool = false
 
     private let recentsKey = "meipdf.recentFiles"
 

@@ -257,7 +257,7 @@ struct AnnotationMenu: View {
         .help("标注工具")
         .popover(isPresented: $showPopover) {
             if let d = doc {
-                AnnotationPopover(doc: d)
+                AnnotationPopover(doc: d, onSignature: { appState.showSignatureCapture = true })
                     .frame(width: 236)
                     .padding(14)
             }
@@ -272,6 +272,7 @@ struct AnnotationMenu: View {
         case .arrow: "arrow.right"
         case .ink: "pencil.tip"
         case .freeText: "text.cursor"
+        case .signature: "signature"
         default: "highlighter"
         }
     }
@@ -281,6 +282,8 @@ struct AnnotationMenu: View {
 /// a `Menu`, but works perfectly in a popover — that is why the controls live here.
 struct AnnotationPopover: View {
     @Bindable var doc: DocumentState
+    /// Opens the signature-capture sheet (set by the toolbar menu).
+    var onSignature: () -> Void = {}
 
     private var colorBinding: Binding<Color> {
         Binding(get: { Color(doc.activeColor) }, set: { doc.activeColor = NSColor($0) })
@@ -315,6 +318,19 @@ struct AnnotationPopover: View {
                 toolButton(.arrow, "arrow.right", "箭头")
                 toolButton(.ink, "pencil.tip", "手绘")
                 toolButton(.freeText, "text.cursor", "文本框")
+            }
+            HStack(spacing: 8) {
+                Button {
+                    onSignature()
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: "signature")
+                        Text("签名").font(.caption)
+                    }
+                    .frame(width: 46, height: 40)
+                }
+                .buttonStyle(.plain)
+                .help("签名")
             }
             Divider()
             Text("样式").font(.subheadline).foregroundStyle(.secondary)

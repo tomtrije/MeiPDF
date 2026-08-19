@@ -1,6 +1,44 @@
 import SwiftUI
 import PDFKit
 
+/// A stamp annotation that renders a captured signature image. PDFKit has no public
+/// image-annotation property, so we subclass and draw the `NSImage` in `draw`.
+final class ImageStampAnnotation: PDFAnnotation {
+    var image: NSImage?
+
+    init(bounds: CGRect, image: NSImage, userName: String) {
+        super.init(bounds: bounds, forType: .stamp, withProperties: nil)
+        self.image = image
+        self.userName = userName
+    }
+
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        super.draw(with: box, in: context)
+        guard let img = image,
+              let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+        let r = self.bounds
+        context.saveGState()
+        // Translate to the top-left of the bounds, then flip Y so the image (which
+        // is stored top-left / Y-down) draws upright inside the (Y-up) PDF box.
+        context.translateBy(x: r.minX, y: r.maxY)
+        context.scaleBy(x: 1, y: -1)
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: r.width, height: r.height))
+        context.restoreGState()
+    }
+}
+
+extension NSImage {
+    /// PNG representation (NSImage has no built-in png exporter).
+    func pngData() -> Data? {
+        guard let tiff = tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        return png
+    }
+}
+
 /// PDFView subclass that additionally supports:
 ///  - drawing shape / line annotations via mouse drag when an annotation tool is active;
 ///  - dragging existing annotations (shapes, notes, lines, and foreign/Preview ones)
@@ -72,12 +110,27 @@ final class MeiPDFView: PDFView {
                     border.lineWidth = ds.activeLineWidth
                     if let pattern = ds.activeLineStyle.dashPattern { border.dashPattern = pattern }
                     ann.border = border
-                    page.addAnnotation(ann)
-                    self.inkTempAnn = ann
-                    return
+                page.addAnnotation(ann)
+                self.inkTempAnn = ann
+                return
+            }
+            // Signature: stamp the captured image at the click point.
+            if tool == .signature {
+                if let img = ds.pendingSignature, let data = img.pngData() {
+                    let w = img.size.width, h = img.size.height
+                    let targetW: CGFloat = 150
+                    let scale = targetW / max(w, 1)
+                    let bw = w * scale, bh = h * scale
+                    let b = CGRect(x: p.x, y: p.y - bh, width: bw, height: bh)
+                    let idx = ds.pdfDocument.index(for: page)
+                    ds.addSignature(bounds: b, imageData: data, color: ds.activeColor, pageIndex: idx)
                 }
-                self.dragStart = p
-                self.tempPage = page
+                ds.pendingSignature = nil
+                ds.activeTool = nil
+                return
+            }
+            self.dragStart = p
+            self.tempPage = page
                 let subtype: PDFAnnotationSubtype = (tool == .circle) ? .circle : (tool == .line || tool == .arrow) ? .line : .square
                 let ann = PDFAnnotation(bounds: NSRect(x: p.x, y: p.y, width: 1, height: 1), forType: subtype, withProperties: nil)
                 ann.color = ds.activeColor
@@ -359,6 +412,8 @@ struct PDFViewWrapper: NSViewRepresentable {
             view.autoScales = false
             view.scaleFactor = doc.scaleFactor
         } else {
+            // Default-zoom preference is applied once in `updateNSView`, after the
+            // view's bounds are known (needed to compute fitWidth / fitHeight).
             view.autoScales = true
         }
         doc.scaleFactor = view.scaleFactor
@@ -382,6 +437,13 @@ struct PDFViewWrapper: NSViewRepresentable {
         if nsView.displayMode != doc.displayMode { nsView.displayMode = doc.displayMode }
         if nsView.displayDirection != doc.displayDirection { nsView.displayDirection = doc.displayDirection }
         nsView.backgroundColor = doc.theme.backgroundColor
+        // Apply the app's default-zoom preference exactly once, now that the view's
+        // bounds are known (required to compute fitWidth / fitHeight / fitPage).
+        if !doc.zoomLocked, !doc.defaultZoomApplied,
+           doc.preferences.defaultZoom != .none, nsView.bounds.width > 0 {
+            doc.applyDefaultZoom(in: nsView)
+            doc.defaultZoomApplied = true
+        }
         if nsView.autoScales {
             // Auto-scaling owns the factor; mirror it into the model for the % readout.
             doc.scaleFactor = nsView.scaleFactor
@@ -439,6 +501,7 @@ struct PDFViewWrapper: NSViewRepresentable {
         shapeItem("箭头", .arrow, into: ann)
         shapeItem("手绘", .ink, into: ann)
         shapeItem("文本框", .freeText, into: ann)
+        shapeItem("签名", .signature, into: ann)
         let annTop = NSMenuItem(title: "标注工具", action: nil, keyEquivalent: "")
         annTop.submenu = ann
         menu.addItem(annTop)

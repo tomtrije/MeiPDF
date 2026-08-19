@@ -64,6 +64,12 @@ struct ContentView: View {
         .sheet(item: inspectorBinding) { doc in
             InspectorView(doc: doc)
         }
+        .sheet(isPresented: Binding(
+            get: { appState.showSignatureCapture },
+            set: { appState.showSignatureCapture = $0 }
+        )) {
+            SignatureCaptureView()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .meiPDFRequestPrint)) { _ in
             if doc != nil { showPrint = true }
         }

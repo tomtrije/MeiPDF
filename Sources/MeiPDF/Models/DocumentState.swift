@@ -22,6 +22,9 @@ final class DocumentState: Identifiable {
     /// When `true`, the zoom factor is locked to `scaleFactor` (manually set / fit /
     /// actual). When `false`, the view fits automatically. Survives tab switches.
     var zoomLocked: Bool = false      // 缩放锁定（状态）
+    /// Ensures the app's default-zoom preference is applied exactly once (on the
+    /// first `updateNSView`, when the view's bounds are known).
+    var defaultZoomApplied: Bool = false
 
     // MARK: 配置（影响功能 / 渲染、可持久化；重新打开文档时恢复）
     // ---- file-level viewing CONFIG (restored on reopen) ----
@@ -36,6 +39,9 @@ final class DocumentState: Identifiable {
     var activeLineWidth: Double = 2
     var activeLineStyle: LineStyle = .solid
     var activeFill: Bool = false
+
+    // Image captured by the signature sheet, awaiting a click on the page to stamp.
+    var pendingSignature: NSImage? = nil
 
     // ---- page-level bookmark CONFIG: page index -> display name ----
     var bookmarks: [Int: String] = [:]
@@ -68,6 +74,19 @@ final class DocumentState: Identifiable {
             self.isLocked = true
         } else {
             loadMeta()
+            applyStartPage()
+        }
+    }
+
+    /// Honour the "start page" preference (cover / last-read / first bookmark).
+    private func applyStartPage() {
+        switch preferences.startPageMode {
+        case .cover:
+            currentPage = 0
+        case .last:
+            break // keep `lastPage` from meta (or 0 on first open)
+        case .firstBookmark:
+            if let first = bookmarks.keys.sorted().first { currentPage = first }
         }
     }
 
@@ -257,13 +276,23 @@ final class DocumentState: Identifiable {
         case .circle: return .circle
         case .line, .arrow: return .line
         case .ink: return .ink
-        case .freeText: return .freeText
+        case .freeText, .signature: return .stamp
         }
     }
 
     private func makePDFAnnotation(_ a: Annotation) -> PDFAnnotation? {
         guard let page = pdfDocument.page(at: a.pageIndex) else { return nil }
         let b = NSRect(x: a.bounds.x, y: a.bounds.y, width: a.bounds.w, height: a.bounds.h)
+        // Signature: a stamp annotation that draws our captured image (non-destructive).
+        if a.type == .signature {
+            if let data = a.imageData, let img = NSImage(data: data) {
+                let ann = ImageStampAnnotation(bounds: b, image: img,
+                                               userName: "MeiPDF:" + a.id.uuidString)
+                ann.shouldDisplay = true
+                return ann
+            }
+            return nil
+        }
         let ann = PDFAnnotation(bounds: b, forType: subtype(for: a.type), withProperties: nil)
         // Tag ours so the sidebar can tell them apart from annotations authored by
         // Preview / other editors, and so dragging / deletion can find them back.
@@ -319,6 +348,8 @@ final class DocumentState: Identifiable {
             ann.color = a.color.nsColor
             ann.font = NSFont.systemFont(ofSize: max(11, a.lineWidth * 6))
             ann.alignment = NSTextAlignment.left
+        case .signature:
+            break // handled earlier (returns an ImageStampAnnotation before this switch)
         }
         ann.shouldDisplay = true
         _ = page
@@ -537,6 +568,20 @@ final class DocumentState: Identifiable {
         addAnnotation(ann)
     }
 
+    /// Build a signature (stamp) annotation from captured image data (PNG).
+    func addSignature(bounds: CGRect, imageData: Data, color: NSColor, pageIndex: Int) {
+        let ann = Annotation(
+            id: UUID(), pageIndex: pageIndex, type: .signature,
+            bounds: CRect(x: Double(bounds.minX), y: Double(bounds.minY), w: Double(bounds.width), h: Double(bounds.height)),
+            quadPoints: nil, color: CodableColor(color), contents: nil,
+            name: AnnotationType.signature.label,
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill,
+            imageData: imageData
+        )
+        addAnnotation(ann)
+    }
+
     func exportAnnotationsMarkdown() -> String {
         guard !annotations.isEmpty else { return "（无标注）" }
         var out = "# \(fileName) 标注导出\n\n"
@@ -631,6 +676,56 @@ final class DocumentState: Identifiable {
         }
     }
 
+    // MARK: Bookmark navigation
+
+    func goToNextBookmark() {
+        let pages = bookmarks.keys.sorted()
+        guard !pages.isEmpty else { return }
+        if let n = pages.first(where: { $0 > currentPage }) {
+            goToPage(n)
+        } else {
+            goToPage(pages[0])
+        }
+    }
+
+    func goToPreviousBookmark() {
+        let pages = bookmarks.keys.sorted()
+        guard !pages.isEmpty else { return }
+        if let n = pages.last(where: { $0 < currentPage }) {
+            goToPage(n)
+        } else {
+            goToPage(pages[pages.count - 1])
+        }
+    }
+
+    // MARK: Default zoom on open
+
+    /// Apply the app's "default zoom" preference to a freshly created view. Called
+    /// from the PDFView wrapper once the view's bounds are known.
+    func applyDefaultZoom(in view: PDFView) {
+        guard preferences.defaultZoom != .none else { return }
+        guard let page = pdfDocument.page(at: currentPage) else { return }
+        let pr = page.bounds(for: .mediaBox)
+        view.autoScales = false
+        switch preferences.defaultZoom {
+        case .fitWidth:
+            guard pr.width > 0 else { return }
+            view.scaleFactor = view.bounds.width / pr.width
+        case .fitPage:
+            guard pr.width > 0, pr.height > 0 else { return }
+            view.scaleFactor = min(view.bounds.width / pr.width, view.bounds.height / pr.height)
+        case .fitHeight:
+            guard pr.height > 0 else { return }
+            view.scaleFactor = view.bounds.height / pr.height
+        case .actual:
+            view.scaleFactor = 1.0
+        case .none:
+            break
+        }
+        scaleFactor = view.scaleFactor
+        zoomLocked = true
+    }
+
     // MARK: Export pages as PNG
 
     /// Render a single page to a PNG file at 2× scale (matches Preview's default export).
@@ -654,6 +749,20 @@ final class DocumentState: Identifiable {
         }
     }
 
+    // MARK: Export plain text
+
+    /// Concatenate the extracted text of every page into a UTF-8 text file.
+    func exportText(to url: URL) {
+        var out = ""
+        for i in 0..<pageCount {
+            if let page = pdfDocument.page(at: i), let text = page.string {
+                out += text
+                if !text.hasSuffix("\n") { out += "\n" }
+            }
+        }
+        try? out.write(to: url, atomically: true, encoding: .utf8)
+    }
+
     // MARK: Export flattened PDF
 
     /// Write the current document (including all in-memory annotations we added to
@@ -662,6 +771,12 @@ final class DocumentState: Identifiable {
     @discardableResult
     func exportPDF(to url: URL) -> Bool {
         guard !isLocked else { return false }
+        // When annotations are excluded, copy the original file verbatim (our marks
+        // live only in memory and are never written back to the source).
+        if !preferences.exportWithAnnotations, let u = fileURL, let data = try? Data(contentsOf: u) {
+            try? data.write(to: url)
+            return true
+        }
         return pdfDocument.write(to: url)
     }
 

@@ -26,7 +26,7 @@ enum Theme: String, Codable, CaseIterable, Identifiable {
 // MARK: - Annotation types
 
 enum AnnotationType: String, Codable, CaseIterable, Identifiable {
-    case highlight, underline, strikeOut, note, square, circle, line, arrow, ink, freeText
+    case highlight, underline, strikeOut, note, square, circle, line, arrow, ink, freeText, signature
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -40,6 +40,7 @@ enum AnnotationType: String, Codable, CaseIterable, Identifiable {
         case .arrow: "箭头"
         case .ink: "手绘"
         case .freeText: "文本框"
+        case .signature: "签名"
         }
     }
 }
@@ -109,13 +110,15 @@ struct Annotation: Codable, Identifiable {
     // Stroke points for ink (freehand) annotations, one sub-array per stroke,
     // stored in absolute page coordinates. Rebuilt relative to `bounds` on render.
     var inkPoints: [[CPoint]]? = nil
+    // PNG image data for signature (stamp) annotations.
+    var imageData: Data? = nil
 
     init(id: UUID, pageIndex: Int, type: AnnotationType, bounds: CRect,
          quadPoints: [CPoint]?, color: CodableColor, contents: String?,
          name: String? = nil,
          createdAt: Date, lineWidth: Double = 2, lineStyle: LineStyle = .solid,
          hasFill: Bool = false, lineStart: CPoint? = nil, lineEnd: CPoint? = nil,
-         inkPoints: [[CPoint]]? = nil) {
+         inkPoints: [[CPoint]]? = nil, imageData: Data? = nil) {
         self.id = id
         self.pageIndex = pageIndex
         self.type = type
@@ -131,6 +134,7 @@ struct Annotation: Codable, Identifiable {
         self.lineStart = lineStart
         self.lineEnd = lineEnd
         self.inkPoints = inkPoints
+        self.imageData = imageData
     }
 
     /// Custom decoder keeps old sidecar files (without style fields) decodable.
@@ -151,6 +155,7 @@ struct Annotation: Codable, Identifiable {
         lineStart = try c.decodeIfPresent(CPoint.self, forKey: .lineStart)
         lineEnd = try c.decodeIfPresent(CPoint.self, forKey: .lineEnd)
         inkPoints = try c.decodeIfPresent([[CPoint]].self, forKey: .inkPoints)
+        imageData = try c.decodeIfPresent(Data.self, forKey: .imageData)
     }
 }
 
@@ -189,6 +194,46 @@ struct RecentFile: Codable, Identifiable {
     var lastOpened: Date
 }
 
+// MARK: - Sidebar thumbnail size
+
+enum ThumbSize: String, Codable, CaseIterable, Identifiable {
+    case small, medium, large
+    var id: String { rawValue }
+    var label: String {
+        switch self { case .small: "小"; case .medium: "中"; case .large: "大" }
+    }
+    /// Thumbnail render width in points (height is unbounded, scaled to fit).
+    var width: CGFloat {
+        switch self { case .small: 80; case .medium: 120; case .large: 170 }
+    }
+}
+
+// MARK: - Start page on open
+
+enum StartPageMode: String, Codable, CaseIterable, Identifiable {
+    case cover, last, firstBookmark
+    var id: String { rawValue }
+    var label: String {
+        switch self { case .cover: "封面页"; case .last: "上次阅读页"; case .firstBookmark: "第一个书签" }
+    }
+}
+
+// MARK: - Default zoom on open
+
+enum DefaultZoom: String, Codable, CaseIterable, Identifiable {
+    case none, fitWidth, fitPage, fitHeight, actual
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .none: "自动"
+        case .fitWidth: "适应宽度"
+        case .fitPage: "适应页面"
+        case .fitHeight: "适应高度"
+        case .actual: "实际大小"
+        }
+    }
+}
+
 // MARK: - Preferences
 
 @MainActor
@@ -204,6 +249,20 @@ final class Preferences {
     var defaultLineWidth: Double = 2
     var defaultLineStyle: LineStyle = .solid
     var defaultFill: Bool = false
+
+    // Sidebar
+    var thumbnailSize: ThumbSize = .medium
+
+    // Open behaviour
+    var defaultZoom: DefaultZoom = .none
+    var startPageMode: StartPageMode = .last
+
+    // Export
+    var exportWithAnnotations: Bool = true
+
+    // Slideshow
+    var slideshowInterval: Double = 4
+    var slideshowLoop: Bool = false
 
     private let defaultsKey = "meipdf.preferences"
 
@@ -224,6 +283,12 @@ final class Preferences {
         if let w = d["width"] as? Double { defaultLineWidth = w }
         if let s = d["style"] as? String, let ls = LineStyle(rawValue: s) { defaultLineStyle = ls }
         if let f = d["fill"] as? Bool { defaultFill = f }
+        if let ts = d["thumb"] as? String, let ts2 = ThumbSize(rawValue: ts) { thumbnailSize = ts2 }
+        if let z = d["zoom"] as? String, let z2 = DefaultZoom(rawValue: z) { defaultZoom = z2 }
+        if let sp = d["startpage"] as? String, let sp2 = StartPageMode(rawValue: sp) { startPageMode = sp2 }
+        if let ea = d["exportann"] as? Bool { exportWithAnnotations = ea }
+        if let si = d["slideint"] as? Double { slideshowInterval = si }
+        if let sl = d["slideloop"] as? Bool { slideshowLoop = sl }
     }
 
     func save() {
@@ -234,7 +299,13 @@ final class Preferences {
             "color": [defaultColor.r, defaultColor.g, defaultColor.b, defaultColor.a],
             "width": defaultLineWidth,
             "style": defaultLineStyle.rawValue,
-            "fill": defaultFill
+            "fill": defaultFill,
+            "thumb": thumbnailSize.rawValue,
+            "zoom": defaultZoom.rawValue,
+            "startpage": startPageMode.rawValue,
+            "exportann": exportWithAnnotations,
+            "slideint": slideshowInterval,
+            "slideloop": slideshowLoop
         ]
         UserDefaults.standard.set(d, forKey: defaultsKey)
     }

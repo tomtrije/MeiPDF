@@ -44,13 +44,29 @@ struct Sidebar: View {
 struct ThumbnailsPanel: View {
     @Bindable var doc: DocumentState
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                ForEach(0..<doc.pageCount, id: \.self) { i in
-                    ThumbnailRow(doc: doc, index: i)
+        VStack(spacing: 0) {
+            HStack {
+                Text("缩略图大小")
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { doc.preferences.thumbnailSize },
+                    set: { doc.preferences.thumbnailSize = $0; doc.preferences.save() }
+                )) {
+                    ForEach(ThumbSize.allCases) { Text($0.label).tag($0) }
                 }
+                .pickerStyle(.segmented)
+                .frame(width: 150)
             }
             .padding(8)
+            Divider()
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(0..<doc.pageCount, id: \.self) { i in
+                        ThumbnailRow(doc: doc, index: i)
+                    }
+                }
+                .padding(8)
+            }
         }
     }
 }
@@ -66,10 +82,11 @@ struct ThumbnailRow: View {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxHeight: 180)
+                    .frame(maxHeight: doc.preferences.thumbnailSize.width * 1.4)
                     .border(doc.currentPage == index ? Color.accentColor : Color.gray.opacity(0.3), width: doc.currentPage == index ? 2 : 1)
             } else {
-                Rectangle().fill(Color.gray.opacity(0.15)).frame(height: 120)
+                Rectangle().fill(Color.gray.opacity(0.15))
+                    .frame(height: doc.preferences.thumbnailSize.width)
             }
             Text("\(index + 1)").font(.caption).foregroundStyle(.secondary)
         }
@@ -79,7 +96,8 @@ struct ThumbnailRow: View {
 
     private func generate() {
         guard image == nil, let page = doc.pdfDocument.page(at: index) else { return }
-        let size = NSSize(width: 130, height: 100000)
+        let w = doc.preferences.thumbnailSize.width
+        let size = NSSize(width: w, height: 100000)
         image = page.thumbnail(of: size, for: .mediaBox)
     }
 }

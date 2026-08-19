@@ -47,6 +47,30 @@ struct PreferencesView: View {
         Binding(get: { appState.preferences.defaultFill },
                 set: { appState.preferences.defaultFill = $0; appState.preferences.save() })
     }
+    private var thumbnailSizeBinding: Binding<ThumbSize> {
+        Binding(get: { appState.preferences.thumbnailSize },
+                set: { appState.preferences.thumbnailSize = $0; appState.preferences.save() })
+    }
+    private var defaultZoomBinding: Binding<DefaultZoom> {
+        Binding(get: { appState.preferences.defaultZoom },
+                set: { appState.preferences.defaultZoom = $0; appState.preferences.save() })
+    }
+    private var startPageBinding: Binding<StartPageMode> {
+        Binding(get: { appState.preferences.startPageMode },
+                set: { appState.preferences.startPageMode = $0; appState.preferences.save() })
+    }
+    private var exportWithAnnotationsBinding: Binding<Bool> {
+        Binding(get: { appState.preferences.exportWithAnnotations },
+                set: { appState.preferences.exportWithAnnotations = $0; appState.preferences.save() })
+    }
+    private var slideshowIntervalBinding: Binding<Double> {
+        Binding(get: { appState.preferences.slideshowInterval },
+                set: { appState.preferences.slideshowInterval = $0; appState.preferences.save() })
+    }
+    private var slideshowLoopBinding: Binding<Bool> {
+        Binding(get: { appState.preferences.slideshowLoop },
+                set: { appState.preferences.slideshowLoop = $0; appState.preferences.save() })
+    }
 
     var body: some View {
         TabView {
@@ -62,6 +86,27 @@ struct PreferencesView: View {
                 Section("行为") {
                     Toggle("记住阅读位置", isOn: rememberLastPosition)
                     Toggle("启用触控板手势", isOn: enableGestures)
+                }
+                Section("默认打开") {
+                    Picker("缩略图大小", selection: thumbnailSizeBinding) {
+                        ForEach(ThumbSize.allCases) { Text($0.label).tag($0) }
+                    }
+                    Picker("默认缩放", selection: defaultZoomBinding) {
+                        ForEach(DefaultZoom.allCases) { Text($0.label).tag($0) }
+                    }
+                    Picker("开始页", selection: startPageBinding) {
+                        ForEach(StartPageMode.allCases) { Text($0.label).tag($0) }
+                    }
+                    Toggle("导出时包含标注", isOn: exportWithAnnotationsBinding)
+                }
+                Section("幻灯片放映") {
+                    Picker("播放间隔", selection: slideshowIntervalBinding) {
+                        Text("3 秒").tag(3.0)
+                        Text("5 秒").tag(5.0)
+                        Text("8 秒").tag(8.0)
+                        Text("10 秒").tag(10.0)
+                    }
+                    Toggle("循环播放", isOn: slideshowLoopBinding)
                 }
                 Section("更新") {
                     Toggle("自动检查更新", isOn: checkUpdates)

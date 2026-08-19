@@ -96,6 +96,19 @@ struct MeiPDFApp: App {
                     .keyboardShortcut("↓", modifiers: .command)
                 Divider()
                 Button("跳到页…") { jumpToPageDialog() }
+                Divider()
+                Menu("书签") {
+                    if let d = activeDoc(), !d.bookmarks.isEmpty {
+                        ForEach(d.bookmarks.keys.sorted(), id: \.self) { idx in
+                            Button("第 \(idx + 1) 页 · \(d.bookmarks[idx] ?? "")") { d.goToPage(idx) }
+                        }
+                        Divider()
+                    }
+                    Button("上一书签") { activeDoc()?.goToPreviousBookmark() }
+                        .keyboardShortcut("[", modifiers: [.command, .option])
+                    Button("下一书签") { activeDoc()?.goToNextBookmark() }
+                        .keyboardShortcut("]", modifiers: [.command, .option])
+                }
             }
             CommandMenu("视图") {
                 Button("进入全屏") { toggleFullScreen() }
@@ -123,9 +136,17 @@ struct MeiPDFApp: App {
             }
             CommandMenu("导出") {
                 Button("导出为 PDF…") { exportPDF() }
+                Button("导出为文本…") { exportText() }
                 Divider()
                 Button("导出本页为 PNG…") { exportCurrentPageImage() }
                 Button("导出全部页面为 PNG…") { exportAllImages() }
+            }
+            CommandMenu("工具") {
+                Button("签名…") { appState.showSignatureCapture = true }
+                    .keyboardShortcut("s", modifiers: [.command, .option])
+                Divider()
+                Button("复制本页图像") { activeDoc()?.copyPageImage() }
+                Button("共享本页图像…") { shareCurrentPageImage() }
             }
         }
         Settings {
@@ -219,6 +240,32 @@ struct MeiPDFApp: App {
             } else {
                 appState.showToast("导出失败")
             }
+        }
+    }
+
+    private func exportText() {
+        guard let d = activeDoc() else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType.plainText]
+        panel.nameFieldStringValue = (d.fileName as NSString).deletingPathExtension + ".txt"
+        if panel.runModal() == .OK, let url = panel.url {
+            d.exportText(to: url)
+        }
+    }
+
+    /// Present the macOS share sheet for the current page rendered as a 2× image —
+    /// mirrors Preview's "共享本页图像" (AirDrop / Mail / Photos / etc.).
+    private func shareCurrentPageImage() {
+        guard let d = activeDoc(),
+              let page = d.pdfDocument.page(at: d.currentPage) else { return }
+        let rect = page.bounds(for: .mediaBox)
+        let scale: CGFloat = 2.0
+        let img = page.thumbnail(of: NSSize(width: rect.width * scale, height: rect.height * scale),
+                                 for: .mediaBox)
+        let picker = NSSharingServicePicker(items: [img])
+        if let window = NSApplication.shared.keyWindow,
+           let view = window.contentView {
+            picker.show(relativeTo: .zero, of: view, preferredEdge: .minY)
         }
     }
 
