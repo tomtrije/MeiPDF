@@ -509,6 +509,18 @@ final class MeiPDFView: PDFView {
                 self.syncInlineEditor()
                 return
             }
+            // 2b) Double-click a FOREIGN note / text annotation → edit its contents
+            //     in place (persisted as a sidecar override; source untouched).
+            if let (npage, nann) = nativeAnnotationUnder(event) {
+                _ = npage
+                MainActor.assumeIsolated {
+                    if nann.type == "Text" || nann.type == "FreeText" {
+                        self.documentState?.editingNative = nann
+                    }
+                }
+                self.syncNativeEditor()
+                return
+            }
         }
 
         // 3) Single click on one of our annotations → select + begin move.
@@ -889,6 +901,86 @@ final class MeiPDFView: PDFView {
         inlineEditor?.removeFromSuperview()
         inlineEditor = nil
     }
+
+    // MARK: Inline editing of foreign (native) annotations
+
+    private var nativeEditor: InlineEditorHost?
+    private weak var nativeEditAnnotation: PDFAnnotation?
+
+    /// Show / move / hide the in-place editor for a FOREIGN annotation
+    /// (`editingNative`). Same rules as `syncInlineEditor`: hidden original, editor
+    /// styled per type, direct event-driven show/hide, self-heal on target switch.
+    func syncNativeEditor() {
+        guard let ds = documentState else { hideNativeEditor(); return }
+        guard let ann = ds.editingNative else { hideNativeEditor(); return }
+
+        // Same annotation already editing → just reposition.
+        if let ed = nativeEditor, nativeEditAnnotation === ann {
+            repositionNativeEditor(ed, ann: ann)
+            return
+        }
+
+        guard let dv = documentView else { hideNativeEditor(); return }
+
+        // Restore anything left hidden by a previous native edit.
+        if let prev = nativeEditAnnotation {
+            prev.shouldDisplay = ds.showAnnotations
+        }
+
+        let isNote = ann.type == "Text"
+        let font = NSFont.systemFont(ofSize: isNote ? 12 : 14)
+        let textColor: NSColor = isNote ? .labelColor : ann.color
+        let accent = ann.color
+
+        ann.shouldDisplay = false
+        nativeEditAnnotation = ann
+
+        let ed: InlineEditorHost
+        if let existing = nativeEditor {
+            ed = existing
+        } else {
+            ed = InlineEditorHost(frame: .zero)
+            ed.onSave = { [weak self, weak ds] text in
+                guard let ds, let target = self?.nativeEditAnnotation else { return }
+                ds.updateNativeAnnotationContents(target, contents: text)
+                ds.editingNative = nil
+                self?.hideNativeEditor()
+                self?.selectionOverlay?.setNeedsDisplay(self?.selectionOverlay?.bounds ?? .zero)
+            }
+            ed.onCancel = { [weak self, weak ds] in
+                ds?.editingNative = nil
+                self?.hideNativeEditor()
+            }
+            nativeEditor = ed
+            dv.addSubview(ed)
+        }
+        ed.beginEditing(text: ann.contents ?? "", font: font, textColor: textColor,
+                        commitOnReturn: !isNote, bubble: isNote, accent: accent)
+        repositionNativeEditor(ed, ann: ann)
+    }
+
+    private func repositionNativeEditor(_ ed: InlineEditorHost, ann: PDFAnnotation) {
+        guard let ds = documentState, let pageIndex = ds.pageIndex(of: ann),
+              let page = ds.pdfDocument.page(at: pageIndex),
+              let dv = documentView else { return }
+        let rb = ann.bounds
+        let tl = dv.convert(convert(CGPoint(x: rb.minX, y: rb.maxY), from: page), from: self)
+        let br = dv.convert(convert(CGPoint(x: rb.maxX, y: rb.minY), from: page), from: self)
+        let w = max(abs(br.x - tl.x), 120)
+        let h = max(abs(br.y - tl.y), 32)
+        let x = min(tl.x, br.x)
+        let y = min(tl.y, br.y)
+        ed.frame = CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    private func hideNativeEditor() {
+        if let ann = nativeEditAnnotation, let ds = documentState {
+            ann.shouldDisplay = ds.showAnnotations
+        }
+        nativeEditAnnotation = nil
+        nativeEditor?.removeFromSuperview()
+        nativeEditor = nil
+    }
 }
 
 // MARK: - Context menu target (retained by the coordinator)
@@ -1063,6 +1155,7 @@ struct PDFViewWrapper: NSViewRepresentable {
         let d = doc
         DispatchQueue.main.async {
             nsView.syncInlineEditor()
+            nsView.syncNativeEditor()
             // Apply the app's default-zoom preference exactly once, now that the view's
             // bounds are known (required to compute fitWidth / fitHeight / fitPage).
             if !d.zoomLocked, !d.defaultZoomApplied,

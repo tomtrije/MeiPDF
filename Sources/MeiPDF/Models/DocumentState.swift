@@ -62,6 +62,10 @@ final class DocumentState: Identifiable {
     /// a popover to edit its text (same pattern as `editingNote`).
     var editingFreeText: NoteEditTarget? = nil
 
+    /// Foreign (Preview-authored etc.) annotation whose contents are being edited
+    /// in place (double-click). `nil` when not editing a foreign annotation.
+    weak var editingNative: PDFAnnotation? = nil
+
     /// Currently selected (our own) annotation — drives the on-page selection
     /// handles and Delete-key removal. `nil` means nothing is selected.
     var selectedAnnotationID: UUID? = nil
@@ -160,9 +164,11 @@ final class DocumentState: Identifiable {
             scaleFactor = CGFloat(z)
         }
         removedNativeKeys = meta.removedNativeKeys ?? []
+        nativeContentsOverrides = meta.nativeContentsOverrides ?? [:]
         applyRotationToPages()
         rebuildAnnotationsOnPages()
         applyRemovedNativeAnnotations()
+        applyNativeContentsOverrides()
     }
 
     func unlock(with password: String) -> Bool {
@@ -193,7 +199,8 @@ final class DocumentState: Identifiable {
             hasFill: activeFill,
             zoomFactor: zoomLocked ? Double(scaleFactor) : nil,
             zoomLocked: zoomLocked,
-            removedNativeKeys: removedNativeKeys
+            removedNativeKeys: removedNativeKeys,
+            nativeContentsOverrides: nativeContentsOverrides.isEmpty ? nil : nativeContentsOverrides
         )
         MetaStore.save(meta, for: url)
     }
@@ -671,6 +678,9 @@ final class DocumentState: Identifiable {
     /// Persisted in the sidecar so deletions survive reopening the document
     /// (the source file itself is never modified).
     var removedNativeKeys: [String] = []
+    /// Contents overrides for foreign annotations the user edited (contents-free
+    /// fingerprint → new contents). Applied on reopen; source file untouched.
+    var nativeContentsOverrides: [String: String] = [:]
 
     func nativeAnnotationItems() -> [(pageIndex: Int, annotation: PDFAnnotation)] {
         guard !isLocked else { return [] }
@@ -692,6 +702,45 @@ final class DocumentState: Identifiable {
     private func nativeFingerprint(_ ann: PDFAnnotation, pageIndex: Int) -> String {
         let b = ann.bounds
         return "\(pageIndex)|\(ann.type ?? "?")|\(Int(b.origin.x))|\(Int(b.origin.y))|\(Int(b.width))|\(Int(b.height))|\(ann.contents ?? "")"
+    }
+
+    /// Contents-free fingerprint — stable across content edits, used to key the
+    /// contents-override map (the deletion fingerprint includes contents).
+    func nativeKey(_ ann: PDFAnnotation, pageIndex: Int) -> String {
+        let b = ann.bounds
+        return "\(pageIndex)|\(ann.type ?? "?")|\(Int(b.origin.x))|\(Int(b.origin.y))|\(Int(b.width))|\(Int(b.height))"
+    }
+
+    /// Find the page index of a foreign annotation (nil if it is no longer on any page).
+    func pageIndex(of ann: PDFAnnotation) -> Int? {
+        for i in 0..<pageCount {
+            if pdfDocument.page(at: i)?.annotations.contains(where: { $0 === ann }) == true { return i }
+        }
+        return nil
+    }
+
+    /// Apply an in-place content edit to a foreign annotation and persist it as a
+    /// sidecar override (non-destructive — the source file is never modified).
+    func updateNativeAnnotationContents(_ ann: PDFAnnotation, contents: String) {
+        ann.contents = contents
+        guard let pageIndex = pageIndex(of: ann) else { return }
+        nativeContentsOverrides[nativeKey(ann, pageIndex: pageIndex)] = contents
+        nativeAnnotationsRevision += 1
+        persist()
+    }
+
+    /// Re-apply persisted content overrides after (re)loading a document.
+    private func applyNativeContentsOverrides() {
+        guard !nativeContentsOverrides.isEmpty else { return }
+        for i in 0..<pageCount {
+            guard let page = pdfDocument.page(at: i) else { continue }
+            for ann in page.annotations {
+                if ann.userName?.hasPrefix("MeiPDF") == true { continue }
+                if let override = nativeContentsOverrides[nativeKey(ann, pageIndex: i)], ann.contents != override {
+                    ann.contents = override
+                }
+            }
+        }
     }
 
     func removeNativeAnnotation(pageIndex: Int, annotation: PDFAnnotation) {

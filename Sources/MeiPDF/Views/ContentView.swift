@@ -62,6 +62,7 @@ struct ContentView: View {
                 // sync so the inline editor appears / moves / dismisses.
                 .onChange(of: doc.editingNote?.id) { _, _ in }
                 .onChange(of: doc.editingFreeText?.id) { _, _ in }
+                .onChange(of: doc.editingNative.map(ObjectIdentifier.init)) { _, _ in }
                 Divider()
                 StatusBar(doc: doc)
             } else {

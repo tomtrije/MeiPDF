@@ -214,6 +214,11 @@ struct DocumentMeta: Codable {
     /// Fingerprints of foreign (Preview-authored) annotations the user deleted.
     /// Optional so sidecars written before this field existed still decode.
     var removedNativeKeys: [String]? = nil
+
+    /// Contents overrides for foreign annotations the user edited (fingerprint →
+    /// new contents). Non-destructive: the source file is untouched, the edit is
+    /// re-applied on reopen.
+    var nativeContentsOverrides: [String: String]? = nil
 }
 
 // MARK: - Recent files
