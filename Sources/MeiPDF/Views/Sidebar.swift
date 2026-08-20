@@ -177,38 +177,61 @@ struct BookmarksPanel: View {
 struct BookmarkRow: View {
     @Bindable var doc: DocumentState
     let page: Int
-    @FocusState private var focused: Bool
+    @State private var editing = false
+    @State private var draft = ""
+    @FocusState private var fieldFocused: Bool
 
-    /// Bound directly to the model so the rename is saved live on every keystroke
-    /// (no explicit "完成" step — click the name to edit, click away to finish).
-    private var nameBinding: Binding<String> {
-        Binding(get: { doc.bookmarks[page] ?? "第 \(page + 1) 页" },
-                set: { doc.renameBookmark(page: page, name: $0) })
-    }
+    private var currentName: String { doc.bookmarks[page] ?? "第 \(page + 1) 页" }
 
     var body: some View {
         HStack {
             Button { doc.goToPage(page) } label: { Image(systemName: "doc.text").frame(width: 18) }
                 .buttonStyle(.plain)
                 .help("定位到第 \(page + 1) 页")
-            if focused {
-                TextField("名称", text: nameBinding)
-                    .focused($focused)
+
+            if editing {
+                TextField("名称", text: $draft)
+                    .focused($fieldFocused)
                     .textFieldStyle(.roundedBorder)
+                    .onSubmit(commit)
+                Button { commit() } label: { Image(systemName: "checkmark") }
+                    .buttonStyle(.plain)
+                    .help("保存")
+                Button { cancel() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain)
+                    .help("取消")
             } else {
-                Button { focused = true } label: {
-                    Text(doc.bookmarks[page] ?? "第 \(page + 1) 页")
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-                .help("点击重命名")
+                Text(currentName)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button { beginEdit() } label: { Image(systemName: "pencil") }
+                    .buttonStyle(.plain)
+                    .help("重命名")
             }
+
             Spacer()
             Button { doc.removeBookmark(page: page) } label: { Image(systemName: "bookmark.slash") }
                 .buttonStyle(.plain)
                 .help("删除书签")
         }
+    }
+
+    private func beginEdit() {
+        draft = currentName
+        editing = true
+        fieldFocused = true
+    }
+
+    private func cancel() {
+        editing = false
+        draft = ""
+    }
+
+    private func commit() {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        doc.renameBookmark(page: page, name: trimmed.isEmpty ? currentName : trimmed)
+        editing = false
+        draft = ""
     }
 }
 
@@ -315,46 +338,49 @@ struct AnnotationsPanel: View {
 struct AnnotationRow: View {
     @Bindable var doc: DocumentState
     let annotation: Annotation
-    @FocusState private var focused: Bool
+    @State private var editing = false
+    @State private var nameDraft = ""
+    @State private var contentDraft = ""
+    @FocusState private var fieldFocused: Bool
 
-    /// Bound directly to the model — rename is saved live on every keystroke.
-    private var nameBinding: Binding<String> {
-        Binding(get: { annotation.name ?? annotation.type.label },
-                set: { doc.renameAnnotation(id: annotation.id, name: $0) })
-    }
-    /// Live-edited note text (saved to the model on every keystroke).
-    private var contentBinding: Binding<String> {
-        Binding(get: { annotation.contents ?? "" },
-                set: { doc.updateAnnotationContents(id: annotation.id, contents: $0) })
-    }
+    private var currentName: String { annotation.name ?? annotation.type.label }
 
     var body: some View {
         HStack {
             Button { doc.goToPage(annotation.pageIndex) } label: { Image(systemName: "magnifyingglass").frame(width: 18) }
                 .buttonStyle(.plain)
                 .help("定位")
-            VStack(alignment: .leading, spacing: 2) {
-                if focused {
-                    TextField("名称", text: nameBinding)
-                        .focused($focused)
+            if editing {
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField("名称", text: $nameDraft)
+                        .focused($fieldFocused)
                         .textFieldStyle(.roundedBorder)
+                        .onSubmit(commit)
                     if annotation.type == .note {
-                        TextField("内容", text: contentBinding)
+                        TextField("内容", text: $contentDraft)
                             .font(.caption)
                             .textFieldStyle(.roundedBorder)
+                            .onSubmit(commit)
                     }
-                } else {
-                    Button { focused = true } label: {
-                        Text(displayName)
-                            .font(.subheadline)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                }
+                Button { commit() } label: { Image(systemName: "checkmark") }
                     .buttonStyle(.plain)
-                    .help("点击重命名")
+                    .help("保存")
+                Button { cancel() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain)
+                    .help("取消")
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(currentName)
+                        .font(.subheadline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     if let c = annotation.contents, !c.isEmpty {
                         Text(c).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }
+                Button { beginEdit() } label: { Image(systemName: "pencil") }
+                    .buttonStyle(.plain)
+                    .help("重命名")
             }
             Spacer()
             Button { doc.removeAnnotation(id: annotation.id) } label: { Image(systemName: "trash") }
@@ -363,9 +389,26 @@ struct AnnotationRow: View {
         }
     }
 
-    private var displayName: String {
-        if let n = annotation.name, !n.isEmpty { return n }
-        return annotation.type.label
+    private func beginEdit() {
+        nameDraft = currentName
+        contentDraft = annotation.contents ?? ""
+        editing = true
+        fieldFocused = true
+    }
+
+    private func cancel() {
+        editing = false
+        nameDraft = ""
+        contentDraft = ""
+    }
+
+    private func commit() {
+        let n = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        doc.renameAnnotation(id: annotation.id, name: n.isEmpty ? currentName : n)
+        doc.updateAnnotationContents(id: annotation.id, contents: contentDraft)
+        editing = false
+        nameDraft = ""
+        contentDraft = ""
     }
 }
 
