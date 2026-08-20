@@ -211,7 +211,8 @@ final class InlineEditorHost: NSView, NSTextViewDelegate {
         textView.onCommit = { [weak self] in self?.finish(commit: true) }
         textView.onCancel = { [weak self] in self?.finish(commit: false) }
         if bubble {
-            let base = NSColor.windowBackgroundColor.withAlphaComponent(0.92)
+            // Opaque so it fully covers the note bubble underneath while editing.
+            let base = NSColor.windowBackgroundColor
             layer?.backgroundColor = (base.blended(withFraction: 0.15, of: accent.withAlphaComponent(0.35)) ?? base).cgColor
             layer?.cornerRadius = 4
             layer?.borderWidth = 1
@@ -725,14 +726,13 @@ final class MeiPDFView: PDFView {
 
     private var inlineEditor: InlineEditorHost?
     private var activeEditID: UUID?
-    /// The annotation currently being edited (hidden while editing, so the styled
-    /// editor stands in for it — the same annotation keeps the new contents on save).
-    private weak var editingAnnotation: PDFAnnotation?
 
     /// Show / move / hide the in-place editor based on `editingNote`/`editingFreeText`.
     /// Called from the mouse handlers (immediately) and from `updateNSView` (deferred
     /// off the display cycle, as a safety net). The editor is a subview of
-    /// `documentView`, so it tracks scrolling and zoom automatically.
+    /// `documentView` and simply **overlays** the annotation — the annotation itself
+    /// is never hidden, so it can never get stuck invisible (a 1.0.20 regression
+    /// where `shouldDisplay` was toggled and the restore could be missed).
     func syncInlineEditor() {
         guard let ds = documentState else { hideInlineEditor(); return }
         guard let target = ds.editingNote ?? ds.editingFreeText else { hideInlineEditor(); return }
@@ -755,12 +755,6 @@ final class MeiPDFView: PDFView {
         let textColor: NSColor = isNote ? .labelColor : (model?.color.nsColor ?? .labelColor)
         let accent = model?.color.nsColor ?? .systemYellow
 
-        // Hide the annotation's own rendering while it is being edited: the styled
-        // editor stands in for it, so the edit feels in-place and the same
-        // annotation simply gets new contents on save (`updateAnnotationContents`).
-        ann.shouldDisplay = false
-        editingAnnotation = ann
-
         let ed: InlineEditorHost
         if let existing = inlineEditor {
             ed = existing
@@ -771,11 +765,15 @@ final class MeiPDFView: PDFView {
                 ds.updateAnnotationContents(id: target.id, contents: text)
                 ds.editingNote = nil
                 ds.editingFreeText = nil
+                // Close the editor directly — never rely on the SwiftUI
+                // observation → re-render chain to hide it.
+                self?.hideInlineEditor()
                 self?.selectionOverlay?.setNeedsDisplay(self?.selectionOverlay?.bounds ?? .zero)
             }
-            ed.onCancel = { [weak ds] in
+            ed.onCancel = { [weak self, weak ds] in
                 ds?.editingNote = nil
                 ds?.editingFreeText = nil
+                self?.hideInlineEditor()
             }
             inlineEditor = ed
             dv.addSubview(ed)
@@ -802,11 +800,6 @@ final class MeiPDFView: PDFView {
     }
 
     private func hideInlineEditor() {
-        // Bring the annotation's own rendering back (it was hidden while editing).
-        if let ann = editingAnnotation, let ds = documentState {
-            ann.shouldDisplay = ds.showAnnotations
-        }
-        editingAnnotation = nil
         activeEditID = nil
         inlineEditor?.removeFromSuperview()
         inlineEditor = nil
