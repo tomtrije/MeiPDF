@@ -726,22 +726,37 @@ final class MeiPDFView: PDFView {
 
     private var inlineEditor: InlineEditorHost?
     private var activeEditID: UUID?
+    /// The annotation currently being edited. It is hidden (`shouldDisplay = false`)
+    /// while editing so the editor's text never overlaps the original, and is
+    /// restored **directly in the same event** (onSave / onCancel / hideInlineEditor)
+    /// — never through the unreliable observation → re-render chain (the 1.0.20
+    /// disappearing regression). `syncInlineEditor` also self-heals at its start.
+    private weak var editingAnnotation: PDFAnnotation?
 
     /// Show / move / hide the in-place editor based on `editingNote`/`editingFreeText`.
     /// Called from the mouse handlers (immediately) and from `updateNSView` (deferred
     /// off the display cycle, as a safety net). The editor is a subview of
-    /// `documentView` and simply **overlays** the annotation — the annotation itself
-    /// is never hidden, so it can never get stuck invisible (a 1.0.20 regression
-    /// where `shouldDisplay` was toggled and the restore could be missed).
+    /// `documentView`, so it tracks scrolling and zoom automatically.
     func syncInlineEditor() {
         guard let ds = documentState else { hideInlineEditor(); return }
-        guard let target = ds.editingNote ?? ds.editingFreeText else { hideInlineEditor(); return }
+        guard let target = ds.editingNote ?? ds.editingFreeText else {
+            // No editing target: restore any hidden annotation and close the editor.
+            hideInlineEditor()
+            return
+        }
 
         // Only re-seed the text when we are not already editing this annotation
         // (otherwise every SwiftUI re-render would clobber what the user typed).
         if let ed = inlineEditor, activeEditID == target.id {
             repositionEditor(ed, pageIndex: target.pageIndex, id: target.id)
             return
+        }
+
+        // Switching to a (possibly different) annotation: restore anything left
+        // hidden by the previous edit session before hiding the new target.
+        if let prev = editingAnnotation {
+            prev.shouldDisplay = ds.showAnnotations
+            editingAnnotation = nil
         }
 
         guard let page = ds.pdfDocument.page(at: target.pageIndex),
@@ -755,6 +770,10 @@ final class MeiPDFView: PDFView {
         let textColor: NSColor = isNote ? .labelColor : (model?.color.nsColor ?? .labelColor)
         let accent = model?.color.nsColor ?? .systemYellow
 
+        // Hide the original while editing so the editor's text never overlaps it.
+        ann.shouldDisplay = false
+        editingAnnotation = ann
+
         let ed: InlineEditorHost
         if let existing = inlineEditor {
             ed = existing
@@ -765,8 +784,7 @@ final class MeiPDFView: PDFView {
                 ds.updateAnnotationContents(id: target.id, contents: text)
                 ds.editingNote = nil
                 ds.editingFreeText = nil
-                // Close the editor directly — never rely on the SwiftUI
-                // observation → re-render chain to hide it.
+                // Restore + close the editor directly, in this same event.
                 self?.hideInlineEditor()
                 self?.selectionOverlay?.setNeedsDisplay(self?.selectionOverlay?.bounds ?? .zero)
             }
@@ -800,6 +818,11 @@ final class MeiPDFView: PDFView {
     }
 
     private func hideInlineEditor() {
+        // Bring the hidden annotation back (it was hidden while editing).
+        if let ann = editingAnnotation, let ds = documentState {
+            ann.shouldDisplay = ds.showAnnotations
+        }
+        editingAnnotation = nil
         activeEditID = nil
         inlineEditor?.removeFromSuperview()
         inlineEditor = nil
