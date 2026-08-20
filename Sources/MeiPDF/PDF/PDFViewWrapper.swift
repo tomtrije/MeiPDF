@@ -139,6 +139,79 @@ final class PlainTextAnnotation: PDFAnnotation {
     }
 }
 
+/// NSTextView used for in-place annotation editing. Optionally commits on Return
+/// (文本框 / 添加文本) or inserts a newline (笔记 — committed on losing focus).
+final class InlineTextView: NSTextView {
+    var commitOnReturn = false
+    var onCommit: (() -> Void)?
+    var onCancel: (() -> Void)?
+
+    override func insertNewline(_ sender: Any?) {
+        if commitOnReturn {
+            onCommit?()
+        } else {
+            super.insertNewline(sender)
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { // Escape — discard the edit
+            onCancel?()
+            return
+        }
+        super.keyDown(with: event)
+    }
+}
+
+/// Hosts an `InlineTextView` on the PDF's documentView so editing happens right at
+/// the annotation's position and tracks scrolling / zoom for free. Commits on
+/// focus loss (like Preview) and on Return for single-line types.
+final class InlineEditorHost: NSView, NSTextViewDelegate {
+    let textView = InlineTextView()
+    var onSave: ((String) -> Void)?
+    var onCancel: (() -> Void)?
+    private var finished = false
+
+    override init(frame: NSRect) { super.init(frame: frame); setup() }
+    required init?(coder: NSCoder) { super.init(coder: coder); setup() }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
+        textView.isRichText = false
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 3, height: 3)
+        textView.delegate = self
+        addSubview(textView)
+        textView.autoresizingMask = [.width, .height]
+        textView.frame = bounds
+    }
+
+    func textDidEndEditing(_ notification: Notification) {
+        finish(commit: true)
+    }
+
+    private func finish(commit: Bool) {
+        guard !finished else { return }
+        finished = true
+        if commit { onSave?(textView.string) } else { onCancel?() }
+    }
+
+    func beginEditing(text: String, font: NSFont, textColor: NSColor, commitOnReturn: Bool) {
+        finished = false
+        textView.string = text
+        textView.font = font
+        textView.textColor = textColor
+        textView.commitOnReturn = commitOnReturn
+        textView.onCommit = { [weak self] in self?.finish(commit: true) }
+        textView.onCancel = { [weak self] in self?.finish(commit: false) }
+        window?.makeFirstResponder(textView)
+    }
+}
+
 /// The eight resize handles of a selected annotation (corners + edge midpoints).
 fileprivate enum Handle: Int { case nw, n, ne, e, se, s, sw, w }
 
@@ -468,6 +541,9 @@ final class MeiPDFView: PDFView {
                 }
             }
             self.needsDisplay = true
+            // Keep the selection box + handles glued to the annotation while it
+            // moves (the overlay redraws from the live bounds each frame).
+            selectionOverlay?.setNeedsDisplay(selectionOverlay?.bounds ?? self.bounds)
             return
         }
 
@@ -603,6 +679,79 @@ final class MeiPDFView: PDFView {
             return
         }
         super.keyDown(with: event)
+    }
+
+    // MARK: Inline text editing (no popover)
+
+    private var inlineEditor: InlineEditorHost?
+    private var activeEditID: UUID?
+
+    /// Show / move / hide the in-place editor based on `editingNote`/`editingFreeText`.
+    /// Called from `updateNSView` (deferred off the display cycle). The editor is a
+    /// subview of `documentView`, so it tracks scrolling and zoom automatically.
+    func syncInlineEditor() {
+        guard let ds = documentState else { hideInlineEditor(); return }
+        guard let target = ds.editingNote ?? ds.editingFreeText else { hideInlineEditor(); return }
+
+        // Only re-seed the text when we are not already editing this annotation
+        // (otherwise every SwiftUI re-render would clobber what the user typed).
+        if let ed = inlineEditor, activeEditID == target.id {
+            repositionEditor(ed, pageIndex: target.pageIndex, id: target.id)
+            return
+        }
+
+        guard let page = ds.pdfDocument.page(at: target.pageIndex),
+              let ann = page.annotations.first(where: { $0.userName == "MeiPDF:" + target.id.uuidString }),
+              let dv = documentView else { hideInlineEditor(); return }
+
+        let model = ds.annotations.first(where: { $0.id == target.id })
+        let isNote = model?.type == .note
+        let isPlain = model?.type == .plainText
+        let font = NSFont.systemFont(ofSize: isNote ? 12 : (isPlain ? 14 : max(11, (model?.lineWidth ?? 2) * 6)))
+        let textColor: NSColor = isNote ? .labelColor : (model?.color.nsColor ?? .labelColor)
+
+        let ed: InlineEditorHost
+        if let existing = inlineEditor {
+            ed = existing
+        } else {
+            ed = InlineEditorHost(frame: .zero)
+            ed.onSave = { [weak self, weak ds] text in
+                guard let ds else { return }
+                ds.updateAnnotationContents(id: target.id, contents: text)
+                ds.editingNote = nil
+                ds.editingFreeText = nil
+                self?.selectionOverlay?.setNeedsDisplay(self?.selectionOverlay?.bounds ?? .zero)
+            }
+            ed.onCancel = { [weak ds] in
+                ds?.editingNote = nil
+                ds?.editingFreeText = nil
+            }
+            inlineEditor = ed
+            dv.addSubview(ed)
+        }
+        activeEditID = target.id
+        ed.beginEditing(text: ann.contents ?? "", font: font, textColor: textColor, commitOnReturn: !isNote)
+        repositionEditor(ed, pageIndex: target.pageIndex, id: target.id)
+    }
+
+    private func repositionEditor(_ ed: InlineEditorHost, pageIndex: Int, id: UUID) {
+        guard let ds = documentState, let page = ds.pdfDocument.page(at: pageIndex),
+              let ann = page.annotations.first(where: { $0.userName == "MeiPDF:" + id.uuidString }),
+              let dv = documentView else { return }
+        let rb = ann.bounds
+        let tl = dv.convert(convert(CGPoint(x: rb.minX, y: rb.maxY), from: page), from: self)
+        let br = dv.convert(convert(CGPoint(x: rb.maxX, y: rb.minY), from: page), from: self)
+        let w = max(abs(br.x - tl.x), 180)
+        let h = max(abs(br.y - tl.y), 60)
+        let x = min(tl.x, br.x)
+        let y = min(tl.y, br.y)
+        ed.frame = CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    private func hideInlineEditor() {
+        activeEditID = nil
+        inlineEditor?.removeFromSuperview()
+        inlineEditor = nil
     }
 }
 
@@ -769,6 +918,7 @@ struct PDFViewWrapper: NSViewRepresentable {
         // pass (crash seen in 1.0.14). The view-level work above is untouched.
         let d = doc
         DispatchQueue.main.async {
+            nsView.syncInlineEditor()
             // Apply the app's default-zoom preference exactly once, now that the view's
             // bounds are known (required to compute fitWidth / fitHeight / fitPage).
             if !d.zoomLocked, !d.defaultZoomApplied,

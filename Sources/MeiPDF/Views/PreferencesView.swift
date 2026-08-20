@@ -19,6 +19,10 @@ struct PreferencesView: View {
         Binding(get: { appState.preferences.defaultDisplayMode },
                 set: { appState.preferences.defaultDisplayMode = $0; appState.preferences.save() })
     }
+    private var defaultDisplayDirection: Binding<PDFDisplayDirection> {
+        Binding(get: { appState.preferences.defaultDisplayDirection },
+                set: { appState.preferences.defaultDisplayDirection = $0; appState.preferences.save() })
+    }
     private var rememberLastPosition: Binding<Bool> {
         Binding(get: { appState.preferences.rememberLastPosition },
                 set: { appState.preferences.rememberLastPosition = $0; appState.preferences.save() })
@@ -72,6 +76,51 @@ struct PreferencesView: View {
                 set: { appState.preferences.slideshowLoop = $0; appState.preferences.save() })
     }
 
+    // MARK: 文件级（当前文档）绑定 — 每个具体项可手动修改并持久化到 sidecar
+
+    private func docThemeBinding(_ d: DocumentState) -> Binding<Theme> {
+        Binding(get: { d.theme }, set: { d.theme = $0; d.persist() })
+    }
+    private func docModeBinding(_ d: DocumentState) -> Binding<PDFDisplayMode> {
+        Binding(get: { d.displayMode }, set: { d.displayMode = $0; d.persist() })
+    }
+    private func docDirectionBinding(_ d: DocumentState) -> Binding<PDFDisplayDirection> {
+        Binding(get: { d.displayDirection }, set: { d.displayDirection = $0; d.persist() })
+    }
+    private func docRotationBinding(_ d: DocumentState) -> Binding<Int> {
+        Binding(get: { d.rotation }, set: {
+            d.rotation = $0 % 360
+            d.applyRotationToPages()
+            d.pdfView?.layoutDocumentView()
+            d.persist()
+        })
+    }
+    private func docColorBinding(_ d: DocumentState) -> Binding<Color> {
+        Binding(get: { Color(d.activeColor) },
+                set: { d.activeColor = NSColor($0); d.persist() })
+    }
+    private func docWidthBinding(_ d: DocumentState) -> Binding<Double> {
+        Binding(get: { d.activeLineWidth }, set: { d.activeLineWidth = $0; d.persist() })
+    }
+    private func docStyleBinding(_ d: DocumentState) -> Binding<LineStyle> {
+        Binding(get: { d.activeLineStyle }, set: { d.activeLineStyle = $0; d.persist() })
+    }
+    private func docFillBinding(_ d: DocumentState) -> Binding<Bool> {
+        Binding(get: { d.activeFill }, set: { d.activeFill = $0; d.persist() })
+    }
+
+    // MARK: 页面（运行时）绑定
+
+    private func docScaleBinding(_ d: DocumentState) -> Binding<Double> {
+        Binding(get: { d.scaleFactor }, set: { d.setScale($0) })
+    }
+    private func docPageBinding(_ d: DocumentState) -> Binding<Int> {
+        Binding(get: { d.currentPage + 1 }, set: { d.goToPage($0 - 1) })
+    }
+    private func docShowAnnotationsBinding(_ d: DocumentState) -> Binding<Bool> {
+        Binding(get: { d.showAnnotations }, set: { d.showAnnotations = $0; d.persist() })
+    }
+
     var body: some View {
         TabView {
             Form {
@@ -81,6 +130,10 @@ struct PreferencesView: View {
                     }
                     Picker("默认版式", selection: defaultDisplayMode) {
                         ForEach(modes, id: \.0) { Text($0.1).tag($0.0) }
+                    }
+                    Picker("默认滚动方向", selection: defaultDisplayDirection) {
+                        Text("纵向").tag(PDFDisplayDirection.vertical)
+                        Text("横向").tag(PDFDisplayDirection.horizontal)
                     }
                 }
                 Section("行为") {
@@ -146,6 +199,81 @@ struct PreferencesView: View {
             }
             .formStyle(.grouped)
             .tabItem { Label("默认设置", systemImage: "slider.horizontal.3") }
+
+            Form {
+                if let d = appState.selectedDocument(id: appState.selectedID) {
+                    Section("文件级设置（仅当前文档，随文档记忆）") {
+                        Picker("主题", selection: docThemeBinding(d)) {
+                            ForEach(Theme.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("版式", selection: docModeBinding(d)) {
+                            ForEach(modes, id: \.0) { Text($0.1).tag($0.0) }
+                        }
+                        Picker("滚动方向", selection: docDirectionBinding(d)) {
+                            Text("纵向").tag(PDFDisplayDirection.vertical)
+                            Text("横向").tag(PDFDisplayDirection.horizontal)
+                        }
+                        Picker("旋转", selection: docRotationBinding(d)) {
+                            Text("0°").tag(0)
+                            Text("90°").tag(90)
+                            Text("180°").tag(180)
+                            Text("270°").tag(270)
+                        }
+                        ColorPicker("标注颜色", selection: docColorBinding(d))
+                        Picker("线宽", selection: docWidthBinding(d)) {
+                            Text("细").tag(1.0)
+                            Text("中").tag(2.0)
+                            Text("粗").tag(4.0)
+                            Text("特粗").tag(8.0)
+                        }
+                        .pickerStyle(.segmented)
+                        Picker("线型", selection: docStyleBinding(d)) {
+                            ForEach(LineStyle.allCases) { Text($0.label).tag($0) }
+                        }
+                        Toggle("填充（矩形 / 椭圆）", isOn: docFillBinding(d))
+                    }
+                } else {
+                    Text("请先打开一个文档，再编辑它的文件级设置。").foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("当前文档", systemImage: "doc.text") }
+
+            Form {
+                if let d = appState.selectedDocument(id: appState.selectedID) {
+                    Section("缩放（当前文档实时状态）") {
+                        Picker("缩放倍数", selection: docScaleBinding(d)) {
+                            ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0], id: \.self) { f in
+                                Text("\(Int(f * 100))%").tag(f)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        HStack {
+                            Button("适应宽度") { d.fitWidth() }
+                            Button("适应页面") { d.fitPage() }
+                            Button("适应高度") { d.fitHeight() }
+                            Button("实际大小") { d.actualSize() }
+                        }
+                    }
+                    Section("页面") {
+                        Stepper("当前页：\(d.currentPage + 1) / \(d.pageCount)",
+                                value: docPageBinding(d), in: 1...max(d.pageCount, 1))
+                    }
+                    Section("显示") {
+                        Toggle("显示高亮与备注", isOn: docShowAnnotationsBinding(d))
+                    }
+                    Section("状态") {
+                        LabeledContent("缩放锁定", value: d.zoomLocked ? "是" : "否")
+                        LabeledContent("书签数", value: "\(d.bookmarks.count)")
+                        LabeledContent("标注数", value: "\(d.annotations.count)")
+                        LabeledContent("搜索结果", value: "\(d.searchMatches.count)")
+                    }
+                } else {
+                    Text("请先打开一个文档，再查看/修改它的页面状态。").foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("页面状态", systemImage: "gauge") }
 
             Form {
                 Section("快捷键") {

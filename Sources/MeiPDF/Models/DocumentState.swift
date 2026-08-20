@@ -601,28 +601,34 @@ final class DocumentState: Identifiable {
     /// Update the text contents of one of our annotations (used by the note / free
     /// text editor popover). The change is mirrored onto the live page annotation
     /// so the new text shows immediately and is included on export — without a full
-    /// rebuild (which would drop the current selection / handles). Note / 添加文本
-    /// bubbles also auto-fit their bounds to the new text.
+    /// rebuild (which would drop the current selection / handles). Note / 添加文本 /
+    /// 文本框 bubbles auto-fit their bounds to the new text.
     func updateAnnotationContents(id: UUID, contents: String) {
         guard let idx = annotations.firstIndex(where: { $0.id == id }) else { return }
         annotations[idx].contents = contents
+        let type = annotations[idx].type
+        let size: CGSize? = {
+            switch type {
+            case .note: Self.noteBubbleSize(for: contents, font: .systemFont(ofSize: 12), maxWidth: 240)
+            case .plainText: Self.plainTextSize(for: contents, font: .systemFont(ofSize: 14), maxWidth: 400)
+            case .freeText: Self.plainTextSize(for: contents, font: .systemFont(ofSize: max(11, annotations[idx].lineWidth * 6)), maxWidth: 300)
+            default: nil
+            }
+        }()
+        var newBounds: CRect? = nil
         if let page = pdfDocument.page(at: annotations[idx].pageIndex) {
             let key = "MeiPDF:" + id.uuidString
-            let isNote = annotations[idx].type == .note
-            let isPlain = annotations[idx].type == .plainText
-            let newSize: CGSize? = isNote
-                ? Self.noteBubbleSize(for: contents, font: .systemFont(ofSize: 12), maxWidth: 240)
-                : isPlain
-                    ? Self.plainTextSize(for: contents, font: .systemFont(ofSize: 14), maxWidth: 400)
-                    : nil
             for ann in page.annotations where ann.userName == key {
                 ann.contents = contents
-                if let size = newSize {
+                if let s = size {
                     // Keep the top-left anchored so the bubble grows down/right.
-                    ann.bounds = NSRect(origin: ann.bounds.origin, size: size)
+                    ann.bounds = NSRect(origin: ann.bounds.origin, size: s)
+                    newBounds = CRect(x: Double(ann.bounds.minX), y: Double(ann.bounds.minY),
+                                      w: Double(s.width), h: Double(s.height))
                 }
             }
         }
+        if let nb = newBounds { annotations[idx].bounds = nb }
         persist()
     }
 

@@ -20,23 +20,6 @@ struct ContentView: View {
         )
     }
 
-    /// Bridges `doc.editingNote` into the `Binding` that `.popover(item:)` needs,
-    /// so clicking a note on the page opens an inline editor for its text.
-    private var noteBinding: Binding<NoteEditTarget?> {
-        Binding(
-            get: { doc?.editingNote },
-            set: { doc?.editingNote = $0 }
-        )
-    }
-
-    /// Bridges `doc.editingFreeText` (double-click a text box on the page).
-    private var freeTextBinding: Binding<NoteEditTarget?> {
-        Binding(
-            get: { doc?.editingFreeText },
-            set: { doc?.editingFreeText = $0 }
-        )
-    }
-
     var body: some View {
         @Bindable var appState = appState
         VStack(spacing: 0) {
@@ -54,12 +37,11 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .id(doc.id)
                 }
-                .popover(item: noteBinding) { target in
-                    NoteEditPopover(doc: doc, target: target)
-                }
-                .popover(item: freeTextBinding) { target in
-                    NoteEditPopover(doc: doc, target: target)
-                }
+                // In-place editing is driven by `editingNote`/`editingFreeText`;
+                // observing them here keeps the representable's `updateNSView` in
+                // sync so the inline editor appears / moves / dismisses.
+                .onChange(of: doc.editingNote?.id) { _, _ in }
+                .onChange(of: doc.editingFreeText?.id) { _, _ in }
                 Divider()
                 StatusBar(doc: doc)
             } else {
