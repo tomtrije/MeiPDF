@@ -124,8 +124,12 @@ struct WindowAccessor: NSViewRepresentable {
         return view
     }
     func updateNSView(_ nsView: NSView, context: Context) {
-        if let window = nsView.window, window.delegate !== context.coordinator {
-            context.coordinator.install(on: window)
+        // Also deferred off the display cycle: swapping the window's delegate during
+        // SwiftUI's layout pass is unsafe (see the 1.0.14 display-cycle crash).
+        DispatchQueue.main.async {
+            if let window = nsView.window, window.delegate !== context.coordinator {
+                context.coordinator.install(on: window)
+            }
         }
     }
     func makeCoordinator() -> MainWindowDelegate { MainWindowDelegate() }

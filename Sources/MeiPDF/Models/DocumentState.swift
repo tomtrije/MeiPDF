@@ -76,7 +76,12 @@ final class DocumentState: Identifiable {
     /// are hidden — mirrors Preview's "显示高亮与备注" toggle (view-only, non-destructive).
     var showAnnotations: Bool = true
 
-    weak var pdfView: MeiPDFView?
+    /// Live PDF view handle for imperative commands. Marked `@ObservationIgnored`
+    /// because it is written from `PDFViewWrapper.updateNSView` during SwiftUI's
+    /// display cycle — as an observable property that write triggered a re-entrant
+    /// SwiftUI transaction and crashed AppKit (`_postWindowNeedsUpdateConstraints`
+    /// raised during layout). No SwiftUI view renders from this property.
+    @ObservationIgnored weak var pdfView: MeiPDFView?
 
     // search
     var searchMatches: [PDFSelection] = []

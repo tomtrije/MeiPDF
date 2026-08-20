@@ -665,10 +665,13 @@ struct PDFViewWrapper: NSViewRepresentable {
             // view's bounds are known (needed to compute fitWidth / fitHeight).
             view.autoScales = true
         }
-        doc.scaleFactor = view.scaleFactor
         if doc.currentPage > 0, let page = doc.pdfDocument.page(at: doc.currentPage) {
             view.go(to: page)
         }
+        // Mirror the initial scale into the model off the display cycle (see the
+        // updateNSView comment — @Observable writes here can crash AppKit).
+        let d = doc
+        DispatchQueue.main.async { d.scaleFactor = view.scaleFactor }
         view.delegate = context.coordinator
         context.coordinator.startObserving(view)
         doc.pdfView = view
@@ -688,24 +691,32 @@ struct PDFViewWrapper: NSViewRepresentable {
         if nsView.displayMode != doc.displayMode { nsView.displayMode = doc.displayMode }
         if nsView.displayDirection != doc.displayDirection { nsView.displayDirection = doc.displayDirection }
         nsView.backgroundColor = doc.theme.backgroundColor
-        // Apply the app's default-zoom preference exactly once, now that the view's
-        // bounds are known (required to compute fitWidth / fitHeight / fitPage).
-        if !doc.zoomLocked, !doc.defaultZoomApplied,
-           doc.preferences.defaultZoom != .none, nsView.bounds.width > 0 {
-            doc.applyDefaultZoom(in: nsView)
-            doc.defaultZoomApplied = true
-        }
-        if nsView.autoScales {
-            // Auto-scaling owns the factor; mirror it into the model for the % readout.
-            doc.scaleFactor = nsView.scaleFactor
-        } else {
-            if abs(nsView.scaleFactor - doc.scaleFactor) > 0.001 {
-                nsView.scaleFactor = doc.scaleFactor
-            }
-            doc.scaleFactor = nsView.scaleFactor
-        }
         context.coordinator.doc = doc
         nsView.menu = buildContextMenu(doc: doc, coordinator: context.coordinator)
+        // Defer every *observable-model* write (default-zoom apply + scaleFactor
+        // mirror) out of the SwiftUI display cycle: mutating @Observable state here
+        // triggers a re-entrant SwiftUI transaction → `NSHostingView.beginTransaction
+        // → setNeedsUpdateConstraints`, and AppKit raises during the window's layout
+        // pass (crash seen in 1.0.14). The view-level work above is untouched.
+        let d = doc
+        DispatchQueue.main.async {
+            // Apply the app's default-zoom preference exactly once, now that the view's
+            // bounds are known (required to compute fitWidth / fitHeight / fitPage).
+            if !d.zoomLocked, !d.defaultZoomApplied,
+               d.preferences.defaultZoom != .none, nsView.bounds.width > 0 {
+                d.applyDefaultZoom(in: nsView)
+                d.defaultZoomApplied = true
+            }
+            if nsView.autoScales {
+                // Auto-scaling owns the factor; mirror it into the model for the % readout.
+                d.scaleFactor = nsView.scaleFactor
+            } else {
+                if abs(nsView.scaleFactor - d.scaleFactor) > 0.001 {
+                    nsView.scaleFactor = d.scaleFactor
+                }
+                d.scaleFactor = nsView.scaleFactor
+            }
+        }
     }
 
     func makeCoordinator() -> PDFViewCoordinator {
