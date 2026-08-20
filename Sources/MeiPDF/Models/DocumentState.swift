@@ -621,15 +621,29 @@ final class DocumentState: Identifiable {
             for ann in page.annotations where ann.userName == key {
                 ann.contents = contents
                 if let s = size {
-                    // Keep the top-left anchored so the bubble grows down/right.
-                    ann.bounds = NSRect(origin: ann.bounds.origin, size: s)
+                    // Grow to fit the new text, but NEVER shrink: a box the user
+                    // resized by hand keeps its size (edits must not reset manual
+                    // size adjustments).
+                    let cur = ann.bounds.size
+                    let w = max(s.width, cur.width)
+                    let h = max(s.height, cur.height)
+                    ann.bounds = NSRect(origin: ann.bounds.origin, size: CGSize(width: w, height: h))
                     newBounds = CRect(x: Double(ann.bounds.minX), y: Double(ann.bounds.minY),
-                                      w: Double(s.width), h: Double(s.height))
+                                      w: Double(w), h: Double(h))
                 }
             }
         }
         if let nb = newBounds { annotations[idx].bounds = nb }
         persist()
+    }
+
+    /// Select one of our annotations (used by the sidebar row / page click) and
+    /// force the selection overlay to redraw around it.
+    func selectAnnotation(id: UUID) {
+        selectedAnnotationID = id
+        if let view = pdfView {
+            view.selectionOverlay?.setNeedsDisplay(view.selectionOverlay?.bounds ?? .zero)
+        }
     }
 
     // MARK: Native (foreign) annotations

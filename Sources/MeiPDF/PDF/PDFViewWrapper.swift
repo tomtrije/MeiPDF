@@ -508,10 +508,15 @@ final class MeiPDFView: PDFView {
         if let handle = resizeHandle, let ann = resizeAnn, let page = resizePage, let orig = resizeOrigBounds {
             let p = pagePoint(event, page: page)
             var b = orig
+            // Page coordinates are Y-up (origin at bottom-left): the top handles
+            // change only the height (top edge = p.y) and never `origin.y` (the
+            // bottom edge stays at `orig.minY`); the bottom handles follow p.y via
+            // the height. (Earlier code moved origin.y on n/nw/ne, inverting the
+            // up/down drag direction.)
             switch handle {
-            case .nw: b.origin.x = p.x; b.origin.y = p.y; b.size.width = orig.maxX - p.x; b.size.height = p.y - orig.minY
-            case .n:  b.origin.y = p.y; b.size.height = p.y - orig.minY
-            case .ne: b.size.width = p.x - orig.minX; b.origin.y = p.y; b.size.height = p.y - orig.minY
+            case .nw: b.origin.x = p.x; b.size.width = orig.maxX - p.x; b.size.height = p.y - orig.minY
+            case .n:  b.size.height = p.y - orig.minY
+            case .ne: b.size.width = p.x - orig.minX; b.size.height = p.y - orig.minY
             case .e:  b.size.width = p.x - orig.minX
             case .se: b.size.width = p.x - orig.minX; b.size.height = orig.maxY - p.y
             case .s:  b.size.height = orig.maxY - p.y

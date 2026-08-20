@@ -183,6 +183,9 @@ struct BookmarkRow: View {
 
     private var currentName: String { doc.bookmarks[page] ?? "第 \(page + 1) 页" }
 
+    /// 与右侧当前页联动：当前页有书签时高亮这一行。
+    private var isCurrentPage: Bool { doc.currentPage == page }
+
     var body: some View {
         HStack {
             Button { doc.goToPage(page) } label: { Image(systemName: "doc.text").frame(width: 18) }
@@ -214,6 +217,11 @@ struct BookmarkRow: View {
                 .buttonStyle(.plain)
                 .help("删除书签")
         }
+        .contentShape(Rectangle())
+        // 整条可点击 → 跳转到该书签页。
+        .onTapGesture { doc.goToPage(page) }
+        // 选中态与当前页联动。
+        .background(isCurrentPage ? Color.accentColor.opacity(0.15) : Color.clear)
     }
 
     private func beginEdit() {
@@ -345,9 +353,12 @@ struct AnnotationRow: View {
 
     private var currentName: String { annotation.name ?? annotation.type.label }
 
+    /// 与右侧页面选中态联动：页面上选中的标注高亮这一行。
+    private var isSelected: Bool { doc.selectedAnnotationID == annotation.id }
+
     var body: some View {
         HStack {
-            Button { doc.goToPage(annotation.pageIndex) } label: { Image(systemName: "magnifyingglass").frame(width: 18) }
+            Button { select() } label: { Image(systemName: "magnifyingglass").frame(width: 18) }
                 .buttonStyle(.plain)
                 .help("定位")
             if editing {
@@ -387,6 +398,16 @@ struct AnnotationRow: View {
                 .buttonStyle(.plain)
                 .help("删除")
         }
+        .contentShape(Rectangle())
+        // 整条可点击 → 选中该标注并定位到所在页（选中框与页面联动）。
+        .onTapGesture { select() }
+        // 选中态与页面选中联动。
+        .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+    }
+
+    private func select() {
+        doc.selectAnnotation(id: annotation.id)
+        doc.goToPage(annotation.pageIndex)
     }
 
     private func beginEdit() {
