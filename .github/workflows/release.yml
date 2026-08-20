@@ -4,8 +4,10 @@ name: Release
 # signed Sparkle appcast, and publish a GitHub Release with both as assets.
 #
 # Triggers:
-#   - push of a tag like v1.2.3  (recommended)
-#   - manual workflow_dispatch   (the tag v<version> must already exist)
+#   - manual workflow_dispatch (recommended): the version is typed into the
+#     workflow input; the v<version> tag and the Release are created
+#     automatically — no need to push a tag beforehand.
+#   - push of a tag like v1.2.3: the version is read from the tag name.
 #
 # Secrets (all optional — without them you still get an ad-hoc DMG, but no
 # notarization and no signed appcast, so auto-update won't work):
@@ -23,8 +25,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release, e.g. 1.0.0 (tag v<version> must already exist).'
-        required: false
+        description: '要发布的版本号，例如 1.0.28。无需提前打 tag，workflow 会自动创建 v<version> 标签并发布 Release。'
+        required: true
 
 permissions:
   contents: write
@@ -45,6 +47,10 @@ jobs:
             VERSION="${{ github.event.inputs.version }}"
           else
             VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "!! 无效版本号: '$VERSION'（应为 x.y.z 格式，例如 1.0.28）" >&2
+            exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "MEIPDF_VERSION=$VERSION" >> "$GITHUB_ENV"
@@ -115,18 +121,20 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="v${MEIPDF_VERSION}"
-          if ! git ls-remote --exit-code origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG not found. Push it first: git tag $TAG && git push origin $TAG" >&2
-            exit 1
-          fi
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release $TAG already exists."
-            exit 0
-          fi
           FILES=("Distribution/MeiPDF-${MEIPDF_VERSION}.dmg")
           [ -f Distribution/appcast.xml ] && FILES+=("Distribution/appcast.xml")
-          gh release create "$TAG" "${FILES[@]}" \
-            --repo "${{ github.repository }}" \
-            --title "MeiPDF ${MEIPDF_VERSION}" \
-            --generate-notes \
-            --latest
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            # Re-run / re-build: refresh the assets on the existing release.
+            echo "Release $TAG 已存在，更新资产…"
+            gh release upload "$TAG" "${FILES[@]}" --repo "${{ github.repository }}" --clobber
+          else
+            # Tag is created automatically by gh if it does not exist (via the
+            # Git API — no push event, so this workflow won't re-trigger).
+            echo "创建 Release $TAG（标签不存在时将自动创建）…"
+            gh release create "$TAG" "${FILES[@]}" \
+              --repo "${{ github.repository }}" \
+              --target "$GITHUB_SHA" \
+              --title "MeiPDF ${MEIPDF_VERSION}" \
+              --generate-notes \
+              --latest
+          fi
