@@ -20,6 +20,15 @@ struct ContentView: View {
         )
     }
 
+    /// Bridges `doc.editingNote` into the `Binding` that `.popover(item:)` needs,
+    /// so clicking a note on the page opens an inline editor for its text.
+    private var noteBinding: Binding<NoteEditTarget?> {
+        Binding(
+            get: { doc?.editingNote },
+            set: { doc?.editingNote = $0 }
+        )
+    }
+
     var body: some View {
         @Bindable var appState = appState
         VStack(spacing: 0) {
@@ -36,6 +45,9 @@ struct ContentView: View {
                     PDFViewWrapper(doc: doc)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .id(doc.id)
+                }
+                .popover(item: noteBinding) { target in
+                    NoteEditPopover(doc: doc, target: target)
                 }
                 Divider()
                 StatusBar(doc: doc)
@@ -247,4 +259,44 @@ struct WelcomeView: View {
 
 extension Notification.Name {
     static let meiPDFRequestPassword = Notification.Name("meiPDFRequestPassword")
+}
+
+// MARK: - Note content editor (popover opened by clicking a note on the page)
+
+/// Small popover shown when the user clicks one of our note annotations on the
+/// page. Lets them type / edit the note's text directly, mirroring Preview's
+/// click-to-edit note behaviour. Commits back to the (non-destructive) model.
+struct NoteEditPopover: View {
+    @Bindable var doc: DocumentState
+    let target: NoteEditTarget
+    @State private var text: String = ""
+    @FocusState private var focused: Bool
+
+    init(doc: DocumentState, target: NoteEditTarget) {
+        self.doc = doc
+        self.target = target
+        _text = State(initialValue: doc.annotations.first(where: { $0.id == target.id })?.contents ?? "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("第 \(target.pageIndex + 1) 页 · 编辑笔记").font(.headline)
+            TextEditor(text: $text)
+                .frame(minWidth: 260, minHeight: 120)
+                .focused($focused)
+            HStack {
+                Spacer()
+                Button("完成") { save() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(12)
+        .frame(width: 300)
+        .task { focused = true }
+    }
+
+    private func save() {
+        doc.updateAnnotationContents(id: target.id, contents: text)
+        doc.editingNote = nil
+    }
 }

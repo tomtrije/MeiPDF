@@ -4,6 +4,13 @@ import SwiftUI
 import AppKit
 import AVFoundation
 
+/// Identifies a note annotation whose contents are being edited via the popover.
+/// `id` is the stable annotation id; `pageIndex` lets the popover jump to the page.
+struct NoteEditTarget: Identifiable {
+    let id: UUID
+    let pageIndex: Int
+}
+
 enum DocError: Error { case cannotOpen, locked }
 
 @MainActor
@@ -46,6 +53,10 @@ final class DocumentState: Identifiable {
 
     // Image captured by the signature sheet, awaiting a click on the page to stamp.
     var pendingSignature: NSImage? = nil
+
+    /// When set, the ContentView shows a popover to edit this note annotation's
+    /// text (clicked directly on the page). `nil` dismisses the popover.
+    var editingNote: NoteEditTarget? = nil
 
     // ---- page-level bookmark CONFIG: page index -> display name ----
     var bookmarks: [Int: String] = [:]
@@ -124,8 +135,10 @@ final class DocumentState: Identifiable {
         activeLineWidth = meta.lineWidth
         if let ls = LineStyle(rawValue: meta.lineStyle) { activeLineStyle = ls }
         activeFill = meta.hasFill
+        removedNativeKeys = meta.removedNativeKeys ?? []
         applyRotationToPages()
         rebuildAnnotationsOnPages()
+        applyRemovedNativeAnnotations()
     }
 
     func unlock(with password: String) -> Bool {
@@ -153,7 +166,8 @@ final class DocumentState: Identifiable {
             activeColor: [c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent],
             lineWidth: activeLineWidth,
             lineStyle: activeLineStyle.rawValue,
-            hasFill: activeFill
+            hasFill: activeFill,
+            removedNativeKeys: removedNativeKeys
         )
         MetaStore.save(meta, for: url)
     }
@@ -315,7 +329,8 @@ final class DocumentState: Identifiable {
         case .circle: return .circle
         case .line, .arrow: return .line
         case .ink: return .ink
-        case .freeText, .signature: return .stamp
+        case .freeText: return .freeText
+        case .signature: return .stamp
         }
     }
 
@@ -357,13 +372,21 @@ final class DocumentState: Identifiable {
         case .line, .arrow:
             ann.color = a.color.nsColor
             configureBorder(ann, width: a.lineWidth, style: a.lineStyle)
-            if let s = a.lineStart, let e = a.lineEnd {
-                ann.startPoint = CGPoint(x: s.x, y: s.y)
-                ann.endPoint = CGPoint(x: e.x, y: e.y)
-            } else {
-                ann.startPoint = CGPoint(x: b.minX, y: b.minY)
-                ann.endPoint = CGPoint(x: b.maxX, y: b.maxY)
-            }
+            // `startPoint`/`endPoint` are specified RELATIVE to the annotation's
+            // bounds (same convention as quadrilateralPoints and ink paths in this
+            // SDK). The previous absolute page coordinates landed outside the
+            // bounds, so the line was clipped away and rendered invisible.
+            // Rebuild the box from the endpoints with padding so perfectly
+            // horizontal / vertical lines never get a degenerate (zero-height or
+            // zero-width) bounds.
+            let s = a.lineStart.map { CGPoint(x: $0.x, y: $0.y) } ?? CGPoint(x: b.minX, y: b.minY)
+            let e = a.lineEnd.map { CGPoint(x: $0.x, y: $0.y) } ?? CGPoint(x: b.maxX, y: b.maxY)
+            let pad: CGFloat = 2
+            let box = CGRect(x: min(s.x, e.x) - pad, y: min(s.y, e.y) - pad,
+                             width: abs(e.x - s.x) + 2 * pad, height: abs(e.y - s.y) + 2 * pad)
+            ann.bounds = box
+            ann.startPoint = CGPoint(x: s.x - box.minX, y: s.y - box.minY)
+            ann.endPoint = CGPoint(x: e.x - box.minX, y: e.y - box.minY)
             if a.type == .arrow { ann.endLineStyle = .closedArrow }
         case .ink:
             ann.color = a.color.nsColor
@@ -425,11 +448,11 @@ final class DocumentState: Identifiable {
         let a = annotations[idx]
         if let page = pdfDocument.page(at: a.pageIndex) {
             // Match by the stable id we stamped into `userName` — robust against any
-            // floating-point drift in bounds.
+            // floating-point drift in bounds. Remove EVERY match (duplicates from
+            // older live-draw sessions must not linger on the page).
             let key = "MeiPDF:" + id.uuidString
             for ann in page.annotations where ann.userName == key {
                 page.removeAnnotation(ann)
-                break
             }
         }
         annotations.remove(at: idx)
@@ -455,10 +478,31 @@ final class DocumentState: Identifiable {
         persist()
     }
 
+    /// Update the text contents of one of our annotations (used by the note editor
+    /// popover; the live PDFAnnotation's `contents` is updated by the caller).
+    func updateAnnotationContents(id: UUID, contents: String) {
+        guard let idx = annotations.firstIndex(where: { $0.id == id }) else { return }
+        annotations[idx].contents = contents
+        persist()
+    }
+
     // MARK: Native (foreign) annotations
+
+    /// Bumped whenever in-memory PDF state that views derive from changes (e.g. a
+    /// foreign annotation is removed) — gives observing views a tracking handle.
+    var nativeAnnotationsRevision: Int = 0
+    /// Fingerprints of foreign (Preview-authored) annotations the user deleted.
+    /// Persisted in the sidecar so deletions survive reopening the document
+    /// (the source file itself is never modified).
+    var removedNativeKeys: [String] = []
 
     func nativeAnnotationItems() -> [(pageIndex: Int, annotation: PDFAnnotation)] {
         guard !isLocked else { return [] }
+        // Touch the revision counter so SwiftUI observes it: deleting a foreign
+        // annotation bumps `nativeAnnotationsRevision`, and without reading it here
+        // the sidebar list would not refresh (the page mutation alone is invisible
+        // to observation).
+        let _ = nativeAnnotationsRevision
         var items: [(Int, PDFAnnotation)] = []
         for i in 0..<pageCount {
             guard let page = pdfDocument.page(at: i) else { continue }
@@ -469,9 +513,34 @@ final class DocumentState: Identifiable {
         return items
     }
 
+    private func nativeFingerprint(_ ann: PDFAnnotation, pageIndex: Int) -> String {
+        let b = ann.bounds
+        return "\(pageIndex)|\(ann.type ?? "?")|\(Int(b.origin.x))|\(Int(b.origin.y))|\(Int(b.width))|\(Int(b.height))|\(ann.contents ?? "")"
+    }
+
     func removeNativeAnnotation(pageIndex: Int, annotation: PDFAnnotation) {
         guard !isLocked else { return }
+        let key = nativeFingerprint(annotation, pageIndex: pageIndex)
+        if !removedNativeKeys.contains(key) { removedNativeKeys.append(key) }
         pdfDocument.page(at: pageIndex)?.removeAnnotation(annotation)
+        // Mutate an @Observable property so the sidebar re-renders immediately
+        // (page-annotation removal alone is invisible to SwiftUI observation).
+        nativeAnnotationsRevision += 1
+        persist()
+    }
+
+    /// Re-apply persisted foreign-annotation deletions after (re)loading a document.
+    private func applyRemovedNativeAnnotations() {
+        guard !removedNativeKeys.isEmpty else { return }
+        for i in 0..<pageCount {
+            guard let page = pdfDocument.page(at: i) else { continue }
+            for ann in page.annotations {
+                if ann.userName?.hasPrefix("MeiPDF") == true { continue }
+                if removedNativeKeys.contains(nativeFingerprint(ann, pageIndex: i)) {
+                    page.removeAnnotation(ann)
+                }
+            }
+        }
     }
 
     // MARK: Annotation visibility (view-only)

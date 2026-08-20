@@ -183,6 +183,10 @@ struct DocumentMeta: Codable {
     var lineWidth: Double = 2
     var lineStyle: String = LineStyle.solid.rawValue
     var hasFill: Bool = false
+
+    /// Fingerprints of foreign (Preview-authored) annotations the user deleted.
+    /// Optional so sidecars written before this field existed still decode.
+    var removedNativeKeys: [String]? = nil
 }
 
 // MARK: - Recent files

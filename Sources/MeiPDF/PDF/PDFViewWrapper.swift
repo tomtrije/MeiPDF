@@ -1,5 +1,6 @@
 import SwiftUI
 import PDFKit
+import AppKit
 
 /// A stamp annotation that renders a captured signature image. PDFKit has no public
 /// image-annotation property, so we subclass and draw the `NSImage` in `draw`.
@@ -136,8 +137,11 @@ final class MeiPDFView: PDFView {
                 let ann = PDFAnnotation(bounds: NSRect(x: p.x, y: p.y, width: 1, height: 1), forType: subtype, withProperties: nil)
                 ann.color = ds.activeColor
                 if subtype == .line {
-                    ann.startPoint = p
-                    ann.endPoint = p
+                    // startPoint/endPoint are relative to the annotation's bounds; the
+                    // transient 1×1 box is anchored at the click point `p`, so both
+                    // endpoints sit at the box origin (0,0) for now.
+                    ann.startPoint = CGPoint(x: 0, y: 0)
+                    ann.endPoint = CGPoint(x: 0, y: 0)
                 } else {
                     let border = PDFBorder()
                     border.lineWidth = ds.activeLineWidth
@@ -164,6 +168,17 @@ final class MeiPDFView: PDFView {
             moveOrigStart = ann.startPoint
             moveOrigEnd = ann.endPoint
             if ann.type == "Note" {
+                // Our own note: open the SwiftUI edit popover instead of the native
+                // (often non-editable) PDFView note bubble. Foreign notes fall through
+                // to PDFView's built-in popup.
+                if let userName = ann.userName, userName.hasPrefix("MeiPDF:"),
+                   let id = UUID(uuidString: String(userName.dropFirst("MeiPDF:".count))) {
+                    let idx = self.document?.index(for: page) ?? 0
+                    MainActor.assumeIsolated {
+                        self.documentState?.editingNote = NoteEditTarget(id: id, pageIndex: idx)
+                    }
+                    return
+                }
                 super.mouseDown(with: event)
             }
             return
@@ -243,7 +258,13 @@ final class MeiPDFView: PDFView {
         let rect = CGRect(x: min(start.x, p.x), y: min(start.y, p.y),
                           width: abs(p.x - start.x), height: abs(p.y - start.y))
         ann.bounds = rect
-        if tool == .line { ann.endPoint = p }
+        if tool == .line || tool == .arrow {
+            // Keep endpoints relative to the (changing) bounds so the live preview
+            // tracks the cursor correctly, matching how `makePDFAnnotation` rebuilds
+            // the final annotation from its stored absolute points.
+            ann.startPoint = CGPoint(x: start.x - rect.minX, y: start.y - rect.minY)
+            ann.endPoint = CGPoint(x: p.x - rect.minX, y: p.y - rect.minY)
+        }
         self.needsDisplay = true
     }
 

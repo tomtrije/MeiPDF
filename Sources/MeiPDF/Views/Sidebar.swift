@@ -189,7 +189,6 @@ struct BookmarkRow: View {
                 TextField("名称", text: $draft)
                     .focused($focused)
                     .onSubmit { commit() }
-                    .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
             } else {
                 Text(doc.bookmarks[page] ?? "第 \(page + 1) 页")
                     .lineLimit(1)
@@ -198,10 +197,17 @@ struct BookmarkRow: View {
                     .onTapGesture { beginEdit() }
             }
             Spacer()
+            Button { focused ? commit() : beginEdit() } label: { Image(systemName: focused ? "checkmark.circle.fill" : "pencil") }
+                .buttonStyle(.plain)
+                .help(focused ? "完成" : "重命名")
             Button { doc.removeBookmark(page: page) } label: { Image(systemName: "bookmark.slash") }
                 .buttonStyle(.plain)
                 .help("删除书签")
         }
+        // Observe focus on the ALWAYS-present row, not on the conditionally-created
+        // TextField: when the field is removed from the hierarchy its own `onChange`
+        // can fail to fire, so a rename entered without pressing ⏎ was silently lost.
+        .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
     }
 
     private func beginEdit() {
@@ -318,6 +324,7 @@ struct AnnotationRow: View {
     @Bindable var doc: DocumentState
     let annotation: Annotation
     @State private var draft: String = ""
+    @State private var noteDraft: String = ""
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -330,22 +337,38 @@ struct AnnotationRow: View {
                     TextField("名称", text: $draft)
                         .focused($focused)
                         .onSubmit { commit() }
-                        .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
+                    if annotation.type == .note {
+                        TextField("内容", text: $noteDraft)
+                            .font(.caption)
+                            .onSubmit { commit() }
+                    }
                 } else {
                     Text(displayName)
                         .font(.subheadline)
                         .contentShape(Rectangle())
                         .onTapGesture { beginEdit() }
-                }
-                if let c = annotation.contents, !c.isEmpty {
-                    Text(c).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    if annotation.type == .note {
+                        if let c = annotation.contents, !c.isEmpty {
+                            Text(c).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                .contentShape(Rectangle())
+                                .onTapGesture { beginEdit() }
+                        }
+                    } else if let c = annotation.contents, !c.isEmpty {
+                        Text(c).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
                 }
             }
             Spacer()
+            Button { focused ? commit() : beginEdit() } label: { Image(systemName: focused ? "checkmark.circle.fill" : "pencil") }
+                .buttonStyle(.plain)
+                .help(focused ? "完成" : "重命名")
             Button { doc.removeAnnotation(id: annotation.id) } label: { Image(systemName: "trash") }
                 .buttonStyle(.plain)
                 .help("删除")
         }
+        // Observe focus on the ALWAYS-present row (same fix as BookmarkRow) so a
+        // rename/edit committed by clicking away is not lost.
+        .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
     }
 
     private var displayName: String {
@@ -354,10 +377,14 @@ struct AnnotationRow: View {
     }
     private func beginEdit() {
         draft = displayName
+        noteDraft = annotation.contents ?? ""
         focused = true
     }
     private func commit() {
         doc.renameAnnotation(id: annotation.id, name: draft)
+        if annotation.type == .note {
+            doc.updateAnnotationContents(id: annotation.id, contents: noteDraft)
+        }
         focused = false
     }
 }
