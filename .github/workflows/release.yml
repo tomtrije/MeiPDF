@@ -34,6 +34,16 @@ permissions:
 jobs:
   build-dmg:
     runs-on: macos-latest
+    # The `if:` conditions below can't read the `secrets` context directly
+    # (Actions forbids it), so mirror the (optional) secrets into job-level env
+    # and gate the steps with `env.<NAME> != ''` instead.
+    env:
+      MACOS_SIGNING_CERT: ${{ secrets.MACOS_SIGNING_CERT }}
+      MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      SPARKLE_EDKEY: ${{ secrets.SPARKLE_EDKEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,10 +80,7 @@ jobs:
         run: swift package resolve
 
       - name: Import signing certificate
-        if: ${{ secrets.MACOS_SIGNING_CERT != '' }}
-        env:
-          MACOS_SIGNING_CERT: ${{ secrets.MACOS_SIGNING_CERT }}
-          MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+        if: env.MACOS_SIGNING_CERT != ''
         run: |
           echo "$MACOS_SIGNING_CERT" | base64 -D -o cert.p12
           security create-keychain -p "" build.keychain
@@ -89,11 +96,7 @@ jobs:
         run: bash Scripts/build-dmg.sh
 
       - name: Notarize DMG
-        if: ${{ secrets.MACOS_SIGNING_CERT != '' }}
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        if: env.MACOS_SIGNING_CERT != ''
         run: |
           DMG="Distribution/MeiPDF-${MEIPDF_VERSION}.dmg"
           xcrun notarytool submit "$DMG" \
@@ -104,9 +107,7 @@ jobs:
           xcrun stapler staple "$DMG"
 
       - name: Generate signed appcast
-        if: ${{ secrets.SPARKLE_EDKEY != '' }}
-        env:
-          SPARKLE_EDKEY: ${{ secrets.SPARKLE_EDKEY }}
+        if: env.SPARKLE_EDKEY != ''
         run: |
           printf '%s' "$SPARKLE_EDKEY" > edkey.txt
           GEN=$(find .build -name generate_appcast | head -1)
