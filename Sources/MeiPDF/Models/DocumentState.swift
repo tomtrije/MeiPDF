@@ -66,6 +66,11 @@ final class DocumentState: Identifiable {
     /// handles and Delete-key removal. `nil` means nothing is selected.
     var selectedAnnotationID: UUID? = nil
 
+    /// Currently selected **foreign** (Preview-authored etc.) annotation. Selected
+    /// via a page click or the sidebar row; drives the selection overlay + the
+    /// sidebar highlight (联动). Weak: cleared automatically when removed.
+    weak var selectedNativeAnnotation: PDFAnnotation? = nil
+
     // ---- page-level bookmark CONFIG: page index -> display name ----
     var bookmarks: [Int: String] = [:]
 
@@ -640,7 +645,18 @@ final class DocumentState: Identifiable {
     /// Select one of our annotations (used by the sidebar row / page click) and
     /// force the selection overlay to redraw around it.
     func selectAnnotation(id: UUID) {
+        selectedNativeAnnotation = nil
         selectedAnnotationID = id
+        if let view = pdfView {
+            view.selectionOverlay?.setNeedsDisplay(view.selectionOverlay?.bounds ?? .zero)
+        }
+    }
+
+    /// Select a foreign (Preview-authored etc.) annotation (sidebar row / page
+    /// click) and force the selection overlay to redraw around it.
+    func selectNativeAnnotation(_ ann: PDFAnnotation) {
+        selectedAnnotationID = nil
+        selectedNativeAnnotation = ann
         if let view = pdfView {
             view.selectionOverlay?.setNeedsDisplay(view.selectionOverlay?.bounds ?? .zero)
         }
@@ -683,6 +699,7 @@ final class DocumentState: Identifiable {
         let key = nativeFingerprint(annotation, pageIndex: pageIndex)
         if !removedNativeKeys.contains(key) { removedNativeKeys.append(key) }
         pdfDocument.page(at: pageIndex)?.removeAnnotation(annotation)
+        if selectedNativeAnnotation === annotation { selectedNativeAnnotation = nil }
         // Mutate an @Observable property so the sidebar re-renders immediately
         // (page-annotation removal alone is invisible to SwiftUI observation).
         nativeAnnotationsRevision += 1

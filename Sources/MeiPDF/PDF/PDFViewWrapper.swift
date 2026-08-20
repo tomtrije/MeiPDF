@@ -301,6 +301,21 @@ final class MeiPDFView: PDFView {
         return nil
     }
 
+    /// Topmost foreign (non-`MeiPDF:`) annotation under the event. Text marks are
+    /// skipped (they must not hijack text selection). Selecting / moving / resizing
+    /// a foreign annotation is in-session only — the source file is never modified.
+    private func nativeAnnotationUnder(_ event: NSEvent) -> (PDFPage, PDFAnnotation)? {
+        guard let page = currentPage else { return nil }
+        let p = pagePoint(event, page: page)
+        for ann in page.annotations.reversed() {
+            guard let t = ann.type else { continue }
+            if t == "Highlight" || t == "Underline" || t == "StrikeOut" { continue }
+            if ann.userName?.hasPrefix("MeiPDF") == true { continue }
+            if ann.bounds.contains(p) { return (page, ann) }
+        }
+        return nil
+    }
+
     /// Find the own annotation with the given stable id on `page`.
     private func ourAnnotation(id: UUID, at page: PDFPage) -> (PDFPage, PDFAnnotation)? {
         let key = "MeiPDF:" + id.uuidString
@@ -454,6 +469,18 @@ final class MeiPDFView: PDFView {
             startResize(ann: rann, page: rpage, handle: handle)
             return
         }
+        // 1b) Resize a selected foreign annotation (must be on the current page).
+        var nativeResizeStarted = false
+        MainActor.assumeIsolated {
+            if let nann = self.documentState?.selectedNativeAnnotation,
+               page.annotations.contains(where: { $0 === nann }),
+               canResize(nann),
+               let handle = handleAt(eventView, for: nann, page: page) {
+                self.startResize(ann: nann, page: page, handle: handle)
+                nativeResizeStarted = true
+            }
+        }
+        if nativeResizeStarted { return }
 
         // 2) Double-click a note / text box / pure text → open its in-place editor.
         if event.clickCount == 2 {
@@ -496,9 +523,25 @@ final class MeiPDFView: PDFView {
             moveOrigEnd = dann.endPoint
             return
         }
+        // 3b) Single click on a foreign (native) annotation → select + begin move.
+        //     In-session only: moves / resizes are never written to the source file.
+        if let (npage, nann) = nativeAnnotationUnder(event) {
+            MainActor.assumeIsolated { self.documentState?.selectNativeAnnotation(nann) }
+            selectionOverlay?.setNeedsDisplay(selectionOverlay?.bounds ?? bounds)
+            moveAnn = nann
+            movePage = npage
+            moveStart = p
+            moveOrigBounds = nann.bounds
+            moveOrigStart = nann.startPoint
+            moveOrigEnd = nann.endPoint
+            return
+        }
 
         // 4) Empty area → deselect and let PDFView handle the click.
-        MainActor.assumeIsolated { documentState?.selectedAnnotationID = nil }
+        MainActor.assumeIsolated {
+            documentState?.selectedAnnotationID = nil
+            documentState?.selectedNativeAnnotation = nil
+        }
         selectionOverlay?.setNeedsDisplay(selectionOverlay?.bounds ?? bounds)
         super.mouseDown(with: event)
     }
@@ -716,12 +759,25 @@ final class MeiPDFView: PDFView {
     // MARK: Keyboard
 
     /// Backspace / Delete removes the currently selected annotation (mirrors
-    /// Preview's behaviour). Ignored when nothing is selected or when a text field
-    /// (e.g. the search box) is the first responder.
+    /// Preview's behaviour) — our own annotations or foreign (native) ones.
+    /// Ignored when nothing is selected or when a text field is the first responder.
     override func keyDown(with event: NSEvent) {
-        if let ds = documentState, ds.selectedAnnotationID != nil,
-           event.keyCode == 51 || event.keyCode == 117 {
+        guard event.keyCode == 51 || event.keyCode == 117 else {
+            super.keyDown(with: event)
+            return
+        }
+        guard let ds = documentState else { super.keyDown(with: event); return }
+        if ds.selectedAnnotationID != nil {
             ds.deleteSelectedAnnotation()
+            selectionOverlay?.setNeedsDisplay(selectionOverlay?.bounds ?? bounds)
+            return
+        }
+        if let nann = ds.selectedNativeAnnotation,
+           let page = currentPage,
+           page.annotations.contains(where: { $0 === nann }) {
+            let idx = ds.pdfDocument.index(for: page)
+            ds.removeNativeAnnotation(pageIndex: idx, annotation: nann)
+            ds.selectedNativeAnnotation = nil
             selectionOverlay?.setNeedsDisplay(selectionOverlay?.bounds ?? bounds)
             return
         }
@@ -856,11 +912,19 @@ final class SelectionOverlay: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        guard let ds = documentState, let id = ds.selectedAnnotationID,
+        guard let ds = documentState,
               let view = ds.pdfView, let page = view.currentPage,
               let dv = view.documentView else { return }
-        let key = "MeiPDF:" + id.uuidString
-        guard let ann = page.annotations.first(where: { $0.userName == key }) else { return }
+        // Resolve the selected annotation: our own (by stable id) or a foreign one.
+        let ann: PDFAnnotation?
+        if let id = ds.selectedAnnotationID {
+            let key = "MeiPDF:" + id.uuidString
+            ann = page.annotations.first(where: { $0.userName == key })
+        } else {
+            ann = ds.selectedNativeAnnotation
+        }
+        // Only draw when the annotation actually belongs to the current page.
+        guard let ann, page.annotations.contains(where: { $0 === ann }) else { return }
         let b = ann.bounds
         let pagePts = [
             CGPoint(x: b.minX, y: b.maxY), CGPoint(x: b.midX, y: b.maxY), CGPoint(x: b.maxX, y: b.maxY),

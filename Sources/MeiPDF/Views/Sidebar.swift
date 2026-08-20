@@ -311,6 +311,15 @@ struct AnnotationsPanel: View {
                                 .buttonStyle(.plain)
                                 .help("删除")
                         }
+                        .contentShape(Rectangle())
+                        // 整条可点击 → 选中该标注并定位到所在页（与页面选中态联动）。
+                        .onTapGesture {
+                            doc.selectNativeAnnotation(item.annotation)
+                            doc.goToPage(item.pageIndex)
+                        }
+                        // 选中态与页面选中联动。
+                        .background(doc.selectedNativeAnnotation === item.annotation
+                                    ? Color.accentColor.opacity(0.15) : Color.clear)
                     }
                 }
             }
