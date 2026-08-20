@@ -91,6 +91,9 @@ struct MeiPDFApp: App {
                 Button("上一处标注") { activeDoc()?.goToPreviousAnnotation() }
                 Button("下一处标注") { activeDoc()?.goToNextAnnotation() }
                 Divider()
+                Button("删除标注") { activeDoc()?.deleteSelectedAnnotation() }
+                    .keyboardShortcut(.delete, modifiers: [])
+                Divider()
                 Button("朗读本页") { activeDoc()?.speakPage() }
                 Button("朗读选区") { activeDoc()?.speakSelection() }
                 Button("停止朗读") { activeDoc()?.stopSpeaking() }

@@ -177,8 +177,14 @@ struct BookmarksPanel: View {
 struct BookmarkRow: View {
     @Bindable var doc: DocumentState
     let page: Int
-    @State private var draft: String = ""
     @FocusState private var focused: Bool
+
+    /// Bound directly to the model so the rename is saved live on every keystroke
+    /// (no explicit "完成" step — click the name to edit, click away to finish).
+    private var nameBinding: Binding<String> {
+        Binding(get: { doc.bookmarks[page] ?? "第 \(page + 1) 页" },
+                set: { doc.renameBookmark(page: page, name: $0) })
+    }
 
     var body: some View {
         HStack {
@@ -186,37 +192,23 @@ struct BookmarkRow: View {
                 .buttonStyle(.plain)
                 .help("定位到第 \(page + 1) 页")
             if focused {
-                TextField("名称", text: $draft)
+                TextField("名称", text: nameBinding)
                     .focused($focused)
-                    .onSubmit { commit() }
+                    .textFieldStyle(.roundedBorder)
             } else {
-                Text(doc.bookmarks[page] ?? "第 \(page + 1) 页")
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture { beginEdit() }
+                Button { focused = true } label: {
+                    Text(doc.bookmarks[page] ?? "第 \(page + 1) 页")
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .help("点击重命名")
             }
             Spacer()
-            Button { focused ? commit() : beginEdit() } label: { Image(systemName: focused ? "checkmark.circle.fill" : "pencil") }
-                .buttonStyle(.plain)
-                .help(focused ? "完成" : "重命名")
             Button { doc.removeBookmark(page: page) } label: { Image(systemName: "bookmark.slash") }
                 .buttonStyle(.plain)
                 .help("删除书签")
         }
-        // Observe focus on the ALWAYS-present row, not on the conditionally-created
-        // TextField: when the field is removed from the hierarchy its own `onChange`
-        // can fail to fire, so a rename entered without pressing ⏎ was silently lost.
-        .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
-    }
-
-    private func beginEdit() {
-        draft = doc.bookmarks[page] ?? "第 \(page + 1) 页"
-        focused = true
-    }
-    private func commit() {
-        doc.renameBookmark(page: page, name: draft)
-        focused = false
     }
 }
 
@@ -323,9 +315,18 @@ struct AnnotationsPanel: View {
 struct AnnotationRow: View {
     @Bindable var doc: DocumentState
     let annotation: Annotation
-    @State private var draft: String = ""
-    @State private var noteDraft: String = ""
     @FocusState private var focused: Bool
+
+    /// Bound directly to the model — rename is saved live on every keystroke.
+    private var nameBinding: Binding<String> {
+        Binding(get: { annotation.name ?? annotation.type.label },
+                set: { doc.renameAnnotation(id: annotation.id, name: $0) })
+    }
+    /// Live-edited note text (saved to the model on every keystroke).
+    private var contentBinding: Binding<String> {
+        Binding(get: { annotation.contents ?? "" },
+                set: { doc.updateAnnotationContents(id: annotation.id, contents: $0) })
+    }
 
     var body: some View {
         HStack {
@@ -334,58 +335,37 @@ struct AnnotationRow: View {
                 .help("定位")
             VStack(alignment: .leading, spacing: 2) {
                 if focused {
-                    TextField("名称", text: $draft)
+                    TextField("名称", text: nameBinding)
                         .focused($focused)
-                        .onSubmit { commit() }
+                        .textFieldStyle(.roundedBorder)
                     if annotation.type == .note {
-                        TextField("内容", text: $noteDraft)
+                        TextField("内容", text: contentBinding)
                             .font(.caption)
-                            .onSubmit { commit() }
+                            .textFieldStyle(.roundedBorder)
                     }
                 } else {
-                    Text(displayName)
-                        .font(.subheadline)
-                        .contentShape(Rectangle())
-                        .onTapGesture { beginEdit() }
-                    if annotation.type == .note {
-                        if let c = annotation.contents, !c.isEmpty {
-                            Text(c).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                                .contentShape(Rectangle())
-                                .onTapGesture { beginEdit() }
-                        }
-                    } else if let c = annotation.contents, !c.isEmpty {
+                    Button { focused = true } label: {
+                        Text(displayName)
+                            .font(.subheadline)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+                    .help("点击重命名")
+                    if let c = annotation.contents, !c.isEmpty {
                         Text(c).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }
             }
             Spacer()
-            Button { focused ? commit() : beginEdit() } label: { Image(systemName: focused ? "checkmark.circle.fill" : "pencil") }
-                .buttonStyle(.plain)
-                .help(focused ? "完成" : "重命名")
             Button { doc.removeAnnotation(id: annotation.id) } label: { Image(systemName: "trash") }
                 .buttonStyle(.plain)
                 .help("删除")
         }
-        // Observe focus on the ALWAYS-present row (same fix as BookmarkRow) so a
-        // rename/edit committed by clicking away is not lost.
-        .onChange(of: focused) { _, isFocused in if !isFocused { commit() } }
     }
 
     private var displayName: String {
         if let n = annotation.name, !n.isEmpty { return n }
         return annotation.type.label
-    }
-    private func beginEdit() {
-        draft = displayName
-        noteDraft = annotation.contents ?? ""
-        focused = true
-    }
-    private func commit() {
-        doc.renameAnnotation(id: annotation.id, name: draft)
-        if annotation.type == .note {
-            doc.updateAnnotationContents(id: annotation.id, contents: noteDraft)
-        }
-        focused = false
     }
 }
 

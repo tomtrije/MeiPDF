@@ -334,6 +334,7 @@ struct AnnotationPopover: View {
                         Text("签名").font(.caption)
                     }
                     .frame(width: 46, height: 40)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("签名")
@@ -368,12 +369,13 @@ struct AnnotationPopover: View {
                 Text(label).font(.caption)
             }
             .frame(width: 46, height: 40)
-            .background(doc.activeTool == t ? Color.accentColor.opacity(0.2) : Color.clear)
-            .overlay(RoundedRectangle(cornerRadius: 6)
-                .stroke(doc.activeTool == t ? Color.accentColor : Color.gray.opacity(0.3)))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(label)
+        .background(doc.activeTool == t ? Color.accentColor.opacity(0.2) : Color.clear)
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .stroke(doc.activeTool == t ? Color.accentColor : Color.gray.opacity(0.3)))
     }
 }
 

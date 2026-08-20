@@ -58,6 +58,14 @@ final class DocumentState: Identifiable {
     /// text (clicked directly on the page). `nil` dismisses the popover.
     var editingNote: NoteEditTarget? = nil
 
+    /// Set when the user double-clicks a free-text annotation on the page, opening
+    /// a popover to edit its text (same pattern as `editingNote`).
+    var editingFreeText: NoteEditTarget? = nil
+
+    /// Currently selected (our own) annotation — drives the on-page selection
+    /// handles and Delete-key removal. `nil` means nothing is selected.
+    var selectedAnnotationID: UUID? = nil
+
     // ---- page-level bookmark CONFIG: page index -> display name ----
     var bookmarks: [Int: String] = [:]
 
@@ -456,7 +464,15 @@ final class DocumentState: Identifiable {
             }
         }
         annotations.remove(at: idx)
+        if selectedAnnotationID == id { selectedAnnotationID = nil }
         persist()
+    }
+
+    /// Remove the currently selected annotation (Delete / Backspace key, or the
+    /// context-menu "删除标注" item). No-op if nothing is selected.
+    func deleteSelectedAnnotation() {
+        guard let id = selectedAnnotationID else { return }
+        removeAnnotation(id: id)
     }
 
     /// Called after an in-page drag of one of our own annotations: persist the new
@@ -478,11 +494,19 @@ final class DocumentState: Identifiable {
         persist()
     }
 
-    /// Update the text contents of one of our annotations (used by the note editor
-    /// popover; the live PDFAnnotation's `contents` is updated by the caller).
+    /// Update the text contents of one of our annotations (used by the note / free
+    /// text editor popover). The change is mirrored onto the live page annotation
+    /// so the new text shows immediately and is included on export — without a full
+    /// rebuild (which would drop the current selection / handles).
     func updateAnnotationContents(id: UUID, contents: String) {
         guard let idx = annotations.firstIndex(where: { $0.id == id }) else { return }
         annotations[idx].contents = contents
+        if let page = pdfDocument.page(at: annotations[idx].pageIndex) {
+            let key = "MeiPDF:" + id.uuidString
+            for ann in page.annotations where ann.userName == key {
+                ann.contents = contents
+            }
+        }
         persist()
     }
 
@@ -687,7 +711,10 @@ final class DocumentState: Identifiable {
     }
 
     /// Build a free-text (text box) annotation placed at an explicit bounds.
-    func addFreeText(bounds: CGRect, color: NSColor, pageIndex: Int) {
+    /// Returns the created annotation so the caller can select it and open the
+    /// inline text editor immediately after a click-drop.
+    @discardableResult
+    func addFreeText(bounds: CGRect, color: NSColor, pageIndex: Int) -> Annotation {
         let ann = Annotation(
             id: UUID(), pageIndex: pageIndex, type: .freeText,
             bounds: CRect(x: Double(bounds.minX), y: Double(bounds.minY), w: Double(bounds.width), h: Double(bounds.height)),
@@ -697,6 +724,7 @@ final class DocumentState: Identifiable {
             lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill
         )
         addAnnotation(ann)
+        return ann
     }
 
     /// Build a signature (stamp) annotation from captured image data (PNG).

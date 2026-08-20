@@ -29,6 +29,14 @@ struct ContentView: View {
         )
     }
 
+    /// Bridges `doc.editingFreeText` (double-click a text box on the page).
+    private var freeTextBinding: Binding<NoteEditTarget?> {
+        Binding(
+            get: { doc?.editingFreeText },
+            set: { doc?.editingFreeText = $0 }
+        )
+    }
+
     var body: some View {
         @Bindable var appState = appState
         VStack(spacing: 0) {
@@ -47,6 +55,9 @@ struct ContentView: View {
                         .id(doc.id)
                 }
                 .popover(item: noteBinding) { target in
+                    NoteEditPopover(doc: doc, target: target)
+                }
+                .popover(item: freeTextBinding) { target in
                     NoteEditPopover(doc: doc, target: target)
                 }
                 Divider()
@@ -279,8 +290,9 @@ struct NoteEditPopover: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("第 \(target.pageIndex + 1) 页 · 编辑笔记").font(.headline)
+        let ann = doc.annotations.first(where: { $0.id == target.id })
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("第 \(target.pageIndex + 1) 页 · \(ann?.type == .freeText ? "编辑文本框" : "编辑笔记")").font(.headline)
             TextEditor(text: $text)
                 .frame(minWidth: 260, minHeight: 120)
                 .focused($focused)

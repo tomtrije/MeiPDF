@@ -41,10 +41,13 @@ extension NSImage {
     }
 }
 
+/// The eight resize handles of a selected annotation (corners + edge midpoints).
+fileprivate enum Handle: Int { case nw, n, ne, e, se, s, sw, w }
+
 /// PDFView subclass that additionally supports:
 ///  - drawing shape / line annotations via mouse drag when an annotation tool is active;
-///  - dragging existing annotations (shapes, notes, lines, and foreign/Preview ones)
-///    when no tool is active, so users can reposition marks directly on the page.
+///  - selecting / moving / resizing existing own annotations (when no tool is active);
+///  - double-clicking a free-text / note to open its inline text editor.
 final class MeiPDFView: PDFView {
     weak var documentState: DocumentState?
 
@@ -66,22 +69,91 @@ final class MeiPDFView: PDFView {
     private var moveOrigStart: CGPoint?
     private var moveOrigEnd: CGPoint?
 
+    // Annotation-resize drag state.
+    private var resizeAnn: PDFAnnotation?
+    private var resizePage: PDFPage?
+    private var resizeHandle: Handle?
+    private var resizeOrigBounds: CGRect?
+    private var resizeOrigStart: CGPoint?
+    private var resizeOrigEnd: CGPoint?
+
+    /// Transparent overlay (a subview of `documentView`) that draws the selection
+    /// rectangle and resize handles for the currently selected annotation.
+    weak var selectionOverlay: SelectionOverlay?
+    /// Tracks zoom changes so the overlay re-draws handle sizes / positions.
+    var scaleObserver: NSKeyValueObservation?
+
     private func pagePoint(_ event: NSEvent, page: PDFPage) -> CGPoint {
         let viewPoint = self.convert(event.locationInWindow, from: nil)
         return self.convert(viewPoint, to: page)
     }
 
-    /// Returns the topmost draggable annotation under the event, skipping text marks
-    /// (highlight / underline / strike-out) so they never hijack text selection.
-    private func draggableAnnotation(at event: NSEvent) -> (PDFPage, PDFAnnotation)? {
+    /// Topmost *own* annotation (tagged `MeiPDF:<uuid>`) under the event — used for
+    /// selection / move / resize. Text marks are skipped (they must not hijack
+    /// text selection or dragging).
+    private func ourAnnotationUnder(_ event: NSEvent) -> (PDFPage, PDFAnnotation)? {
         guard let page = currentPage else { return nil }
         let p = pagePoint(event, page: page)
         for ann in page.annotations.reversed() {
             guard let t = ann.type else { continue }
             if t == "Highlight" || t == "Underline" || t == "StrikeOut" { continue }
-            if ann.bounds.contains(p) { return (page, ann) }
+            if ann.userName?.hasPrefix("MeiPDF:") == true, ann.bounds.contains(p) {
+                return (page, ann)
+            }
         }
         return nil
+    }
+
+    /// Find the own annotation with the given stable id on `page`.
+    private func ourAnnotation(id: UUID, at page: PDFPage) -> (PDFPage, PDFAnnotation)? {
+        let key = "MeiPDF:" + id.uuidString
+        for ann in page.annotations where ann.userName == key {
+            return (page, ann)
+        }
+        return nil
+    }
+
+    /// Whether an annotation can be resized via handles (text marks and ink are not).
+    private func canResize(_ ann: PDFAnnotation) -> Bool {
+        guard let t = ann.type else { return false }
+        return t != "Highlight" && t != "Underline" && t != "StrikeOut" && t != "Ink"
+    }
+
+    /// The 8 handle centres (nw, n, ne, e, se, s, sw, w) in the view's coordinate
+    /// space, derived from the annotation's page bounds.
+    private func handleCenters(for ann: PDFAnnotation, page: PDFPage) -> [CGPoint] {
+        let b = ann.bounds
+        let pagePts = [
+            CGPoint(x: b.minX, y: b.maxY), // nw
+            CGPoint(x: b.midX, y: b.maxY), // n
+            CGPoint(x: b.maxX, y: b.maxY), // ne
+            CGPoint(x: b.maxX, y: b.midY), // e
+            CGPoint(x: b.maxX, y: b.minY), // se
+            CGPoint(x: b.midX, y: b.minY), // s
+            CGPoint(x: b.minX, y: b.minY), // sw
+            CGPoint(x: b.minX, y: b.midY)  // w
+        ]
+        return pagePts.map { convert($0, from: page) }
+    }
+
+    /// Which handle (if any) is under the cursor — `eventView` and the handle
+    /// centres are both in the view's coordinate space.
+    private func handleAt(_ eventView: CGPoint, for ann: PDFAnnotation, page: PDFPage) -> Handle? {
+        let centers = handleCenters(for: ann, page: page)
+        let hs: CGFloat = 7
+        for (i, c) in centers.enumerated() {
+            if abs(c.x - eventView.x) <= hs, abs(c.y - eventView.y) <= hs {
+                return Handle(rawValue: i)
+            }
+        }
+        return nil
+    }
+
+    private func startResize(ann: PDFAnnotation, page: PDFPage, handle: Handle) {
+        resizeAnn = ann; resizePage = page; resizeHandle = handle
+        resizeOrigBounds = ann.bounds
+        resizeOrigStart = ann.startPoint
+        resizeOrigEnd = ann.endPoint
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -93,13 +165,16 @@ final class MeiPDFView: PDFView {
             MainActor.assumeIsolated {
                 let ds = self.documentState!
                 let p = self.pagePoint(event, page: page)
-                // Text box: click to drop an editable free-text annotation.
+                // Text box: click to drop an editable free-text annotation, then open
+                // the inline text editor so the user can type immediately.
                 if tool == .freeText {
                     let w: CGFloat = 150, h: CGFloat = 30
                     let b = CGRect(x: p.x, y: p.y - h, width: w, height: h)
                     let idx = ds.pdfDocument.index(for: page)
-                    ds.addFreeText(bounds: b, color: ds.activeColor, pageIndex: idx)
+                    let ann = ds.addFreeText(bounds: b, color: ds.activeColor, pageIndex: idx)
                     ds.activeTool = nil
+                    ds.selectedAnnotationID = ann.id
+                    ds.editingFreeText = NoteEditTarget(id: ann.id, pageIndex: idx)
                     return
                 }
                 // Freehand: start capturing a stroke.
@@ -155,39 +230,85 @@ final class MeiPDFView: PDFView {
             return
         }
 
-        // No tool: try to grab an existing annotation.
-        //  - Shapes / lines: custom drag (proven to move + persist reliably).
-        //  - Notes (.text): hand the event to PDFView so a plain click opens the
-        //    note's text popup for editing, while a drag still moves it via PDFView's
-        //    native annotation dragging; we persist the new geometry on mouseUp.
-        if let (page, ann) = draggableAnnotation(at: event) {
-            moveAnn = ann
-            movePage = page
-            moveStart = pagePoint(event, page: page)
-            moveOrigBounds = ann.bounds
-            moveOrigStart = ann.startPoint
-            moveOrigEnd = ann.endPoint
-            if ann.type == "Note" {
-                // Our own note: open the SwiftUI edit popover instead of the native
-                // (often non-editable) PDFView note bubble. Foreign notes fall through
-                // to PDFView's built-in popup.
-                if let userName = ann.userName, userName.hasPrefix("MeiPDF:"),
-                   let id = UUID(uuidString: String(userName.dropFirst("MeiPDF:".count))) {
-                    let idx = self.document?.index(for: page) ?? 0
-                    MainActor.assumeIsolated {
-                        self.documentState?.editingNote = NoteEditTarget(id: id, pageIndex: idx)
-                    }
-                    return
-                }
-                super.mouseDown(with: event)
-            }
+        // No tool active: selection / move / resize / inline edit.
+        guard let page = currentPage else { super.mouseDown(with: event); return }
+        let p = pagePoint(event, page: page)
+        let eventView = convert(event.locationInWindow, from: nil)
+
+        // 1) Resize if a handle of the currently selected annotation is hit.
+        if let sel = MainActor.assumeIsolated({ documentState?.selectedAnnotationID }),
+           let (rpage, rann) = ourAnnotation(id: sel, at: page),
+           canResize(rann),
+           let handle = handleAt(eventView, for: rann, page: rpage) {
+            startResize(ann: rann, page: rpage, handle: handle)
             return
         }
 
+        // 2) Double-click a free-text / note → open its text editor.
+        if event.clickCount == 2 {
+            if let (dpage, dann) = ourAnnotationUnder(event),
+               let id = meiPDFId(dann) {
+                let idx = self.document?.index(for: dpage) ?? 0
+                MainActor.assumeIsolated {
+                    if dann.type == "Text" {
+                        self.documentState?.editingNote = NoteEditTarget(id: id, pageIndex: idx)
+                    } else if dann.type == "FreeText" {
+                        self.documentState?.editingFreeText = NoteEditTarget(id: id, pageIndex: idx)
+                    }
+                }
+                return
+            }
+        }
+
+        // 3) Single click on one of our annotations → select + begin move.
+        if let (dpage, dann) = ourAnnotationUnder(event) {
+            MainActor.assumeIsolated { documentState?.selectedAnnotationID = meiPDFId(dann) }
+            selectionOverlay?.setNeedsDisplay(selectionOverlay?.bounds ?? bounds)
+            moveAnn = dann
+            movePage = dpage
+            moveStart = p
+            moveOrigBounds = dann.bounds
+            moveOrigStart = dann.startPoint
+            moveOrigEnd = dann.endPoint
+            return
+        }
+
+        // 4) Empty area → deselect and let PDFView handle the click.
+        MainActor.assumeIsolated { documentState?.selectedAnnotationID = nil }
+        selectionOverlay?.setNeedsDisplay(selectionOverlay?.bounds ?? bounds)
         super.mouseDown(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
+        // Resize an annotation by dragging one of its handles.
+        if let handle = resizeHandle, let ann = resizeAnn, let page = resizePage, let orig = resizeOrigBounds {
+            let p = pagePoint(event, page: page)
+            var b = orig
+            switch handle {
+            case .nw: b.origin.x = p.x; b.origin.y = p.y; b.size.width = orig.maxX - p.x; b.size.height = p.y - orig.minY
+            case .n:  b.origin.y = p.y; b.size.height = p.y - orig.minY
+            case .ne: b.size.width = p.x - orig.minX; b.origin.y = p.y; b.size.height = p.y - orig.minY
+            case .e:  b.size.width = p.x - orig.minX
+            case .se: b.size.width = p.x - orig.minX; b.size.height = orig.maxY - p.y
+            case .s:  b.size.height = orig.maxY - p.y
+            case .sw: b.origin.x = p.x; b.size.width = orig.maxX - p.x; b.size.height = orig.maxY - p.y
+            case .w:  b.origin.x = p.x; b.size.width = orig.maxX - p.x
+            }
+            let minS: CGFloat = 10
+            if b.width < minS { b.size.width = minS }
+            if b.height < minS { b.size.height = minS }
+            ann.bounds = b
+            if ann.type == "Line" {
+                if let s = resizeOrigStart, let e = resizeOrigEnd {
+                    ann.startPoint = CGPoint(x: s.x - b.minX, y: s.y - b.minY)
+                    ann.endPoint = CGPoint(x: e.x - b.minX, y: e.y - b.minY)
+                }
+            }
+            self.needsDisplay = true
+            selectionOverlay?.setNeedsDisplay(selectionOverlay?.bounds ?? self.bounds)
+            return
+        }
+
         // Freehand: accumulate stroke points and rebuild the live ink annotation.
         if let page = inkPage, inkTempAnn != nil {
             let p = pagePoint(event, page: page)
@@ -223,12 +344,8 @@ final class MeiPDFView: PDFView {
         }
 
         if let ann = moveAnn, let page = movePage, let start = moveStart, let orig = moveOrigBounds {
-            if ann.type == "Note" {
-                // Native drag handled by PDFView; geometry persisted on mouseUp.
-                super.mouseDragged(with: event)
-                return
-            }
-            // Custom move for shapes / lines (reliable, persists to our model).
+            // Custom move for all our annotations (shapes / lines / notes / text /
+            // ink / signature). Reliable, persists to our model on mouseUp.
             let p = pagePoint(event, page: page)
             let dx = p.x - start.x, dy = p.y - start.y
             var b = orig
@@ -269,21 +386,22 @@ final class MeiPDFView: PDFView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if let ann = moveAnn, let _ = movePage {
-            if ann.type == "Note" {
-                super.mouseUp(with: event)
-                // Persist the new position only if the note actually moved (a plain
-                // click opens the popup instead and must not be treated as a move).
-                if let id = meiPDFId(ann), noteMoved(ann) {
-                    MainActor.assumeIsolated {
-                        self.documentState?.updateAnnotation(id: id, bounds: ann.bounds,
-                            start: ann.type == "Line" ? ann.startPoint : nil,
-                            end: ann.type == "Line" ? ann.endPoint : nil)
-                    }
+        // Commit a resize (handles) before the move path.
+        if let handle = resizeHandle, let ann = resizeAnn, let page = resizePage {
+            _ = handle; _ = page
+            if let id = meiPDFId(ann) {
+                MainActor.assumeIsolated {
+                    self.documentState?.updateAnnotation(id: id, bounds: ann.bounds,
+                        start: ann.type == "Line" ? ann.startPoint : nil,
+                        end: ann.type == "Line" ? ann.endPoint : nil)
                 }
-                resetMove()
-                return
             }
+            resizeHandle = nil; resizeAnn = nil; resizePage = nil; resizeOrigBounds = nil
+            selectionOverlay?.setNeedsDisplay(selectionOverlay?.bounds ?? bounds)
+            return
+        }
+
+        if let ann = moveAnn, let _ = movePage {
             if let userName = ann.userName, userName.hasPrefix("MeiPDF:"),
                let id = UUID(uuidString: String(userName.dropFirst("MeiPDF:".count))) {
                 MainActor.assumeIsolated {
@@ -355,15 +473,24 @@ final class MeiPDFView: PDFView {
         return id
     }
 
-    private func noteMoved(_ ann: PDFAnnotation) -> Bool {
-        guard let o = moveOrigBounds else { return false }
-        let b = ann.bounds
-        return abs(b.origin.x - o.origin.x) > 2 || abs(b.origin.y - o.origin.y) > 2
-    }
-
     private func resetMove() {
         moveAnn = nil; movePage = nil; moveStart = nil
         moveOrigBounds = nil; moveOrigStart = nil; moveOrigEnd = nil
+    }
+
+    // MARK: Keyboard
+
+    /// Backspace / Delete removes the currently selected annotation (mirrors
+    /// Preview's behaviour). Ignored when nothing is selected or when a text field
+    /// (e.g. the search box) is the first responder.
+    override func keyDown(with event: NSEvent) {
+        if let ds = documentState, ds.selectedAnnotationID != nil,
+           event.keyCode == 51 || event.keyCode == 117 {
+            ds.deleteSelectedAnnotation()
+            selectionOverlay?.setNeedsDisplay(selectionOverlay?.bounds ?? bounds)
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 
@@ -373,6 +500,50 @@ final class ContextMenuTarget: NSObject {
     let run: () -> Void
     init(_ run: @escaping () -> Void) { self.run = run }
     @objc func trigger() { run() }
+}
+
+/// Transparent overlay (a subview of the PDFView's `documentView`) that draws the
+/// selection rectangle and 8 resize handles for the currently selected annotation.
+/// Because it lives inside the scrolled document view, it tracks page scrolling for
+/// free; zoom changes trigger a re-draw via the KVO set up in `attachSelectionOverlay`.
+final class SelectionOverlay: NSView {
+    weak var documentState: DocumentState?
+
+    /// Never capture mouse events — all hit-testing / dragging is handled by
+    /// `MeiPDFView` itself, so the overlay stays purely visual.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let ds = documentState, let id = ds.selectedAnnotationID,
+              let view = ds.pdfView, let page = view.currentPage,
+              let dv = view.documentView else { return }
+        let key = "MeiPDF:" + id.uuidString
+        guard let ann = page.annotations.first(where: { $0.userName == key }) else { return }
+        let b = ann.bounds
+        let pagePts = [
+            CGPoint(x: b.minX, y: b.maxY), CGPoint(x: b.midX, y: b.maxY), CGPoint(x: b.maxX, y: b.maxY),
+            CGPoint(x: b.maxX, y: b.midY), CGPoint(x: b.maxX, y: b.minY), CGPoint(x: b.midX, y: b.minY),
+            CGPoint(x: b.minX, y: b.minY), CGPoint(x: b.minX, y: b.midY)
+        ]
+        // Page → view → documentView coordinate space (screen-aligned, zoom-correct).
+        let pts = pagePts.map { dp in
+            let vp = view.convert(dp, from: page)
+            return dv.convert(vp, from: view)
+        }
+        let outer = [pts[0], pts[2], pts[4], pts[6]]
+        NSColor.systemBlue.setStroke()
+        let path = NSBezierPath()
+        path.move(to: outer[0]); path.line(to: outer[1]); path.line(to: outer[2]); path.line(to: outer[3]); path.close()
+        path.lineWidth = 1.5
+        path.stroke()
+        for c in pts {
+            let r = NSRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)
+            let hp = NSBezierPath(rect: r)
+            NSColor.white.setFill(); hp.fill()
+            NSColor.systemBlue.setStroke(); hp.lineWidth = 1.5; hp.stroke()
+        }
+    }
 }
 
 // MARK: - Coordinator
@@ -458,6 +629,7 @@ struct PDFViewWrapper: NSViewRepresentable {
         view.delegate = context.coordinator
         context.coordinator.startObserving(view)
         doc.pdfView = view
+        attachSelectionOverlay(view, doc: doc)
         view.menu = buildContextMenu(doc: doc, coordinator: context.coordinator)
         return view
     }
@@ -468,6 +640,7 @@ struct PDFViewWrapper: NSViewRepresentable {
         // makes toolbar commands (zoom / fit / rotate / search) always act on the
         // currently visible PDF, even right after a tab switch.
         doc.pdfView = nsView
+        attachSelectionOverlay(nsView, doc: doc)
         if nsView.document !== doc.pdfDocument { nsView.document = doc.pdfDocument }
         if nsView.displayMode != doc.displayMode { nsView.displayMode = doc.displayMode }
         if nsView.displayDirection != doc.displayDirection { nsView.displayDirection = doc.displayDirection }
@@ -494,6 +667,42 @@ struct PDFViewWrapper: NSViewRepresentable {
 
     func makeCoordinator() -> PDFViewCoordinator {
         PDFViewCoordinator(doc)
+    }
+
+    // MARK: Selection overlay + context-menu helpers
+
+    /// Attach the selection-handle overlay to the PDFView's scrolling document view
+    /// (once). The overlay redraws on zoom changes via a KVO on `scaleFactor`.
+    private func attachSelectionOverlay(_ view: MeiPDFView, doc: DocumentState) {
+        guard view.selectionOverlay == nil else { return }
+        guard let dv = view.documentView else { return }
+        let ov = SelectionOverlay()
+        ov.documentState = doc
+        ov.autoresizingMask = [.width, .height]
+        ov.frame = dv.bounds
+        ov.wantsLayer = true
+        dv.addSubview(ov)
+        view.selectionOverlay = ov
+        view.scaleObserver = view.observe(\.scaleFactor, options: [.new]) { [weak view] _, _ in
+            guard let v = view else { return }
+            Task { @MainActor in
+                v.selectionOverlay?.setNeedsDisplay(v.selectionOverlay?.bounds ?? .zero)
+            }
+        }
+    }
+
+    /// The annotation (ours or foreign) under the right-click location, if any.
+    @MainActor
+    private func annotationUnderCursor(doc: DocumentState) -> (page: PDFPage, ann: PDFAnnotation)? {
+        guard let ev = NSApp.currentEvent, let view = doc.pdfView, let page = view.currentPage else { return nil }
+        let vp = view.convert(ev.locationInWindow, from: nil)
+        let p = view.convert(vp, to: page)
+        for ann in page.annotations.reversed() {
+            guard let t = ann.type else { continue }
+            if t == "Highlight" || t == "Underline" || t == "StrikeOut" { continue }
+            if ann.bounds.contains(p) { return (page, ann) }
+        }
+        return nil
     }
 
     // MARK: Context menu
@@ -543,6 +752,22 @@ struct PDFViewWrapper: NSViewRepresentable {
 
         menu.addItem(.separator())
         item("复制本页为图片", enabled: true, into: menu) { MainActor.assumeIsolated { doc.copyPageImage() } }
+
+        // Delete the annotation under the cursor (ours or foreign/Preview-authored).
+        if let found = annotationUnderCursor(doc: doc) {
+            let isOurs = found.ann.userName?.hasPrefix("MeiPDF:") == true
+            menu.addItem(.separator())
+            item("删除标注", into: menu) {
+                if isOurs,
+                   let id = UUID(uuidString: String((found.ann.userName ?? "").dropFirst("MeiPDF:".count))) {
+                    doc.removeAnnotation(id: id)
+                } else {
+                    let idx = doc.pdfDocument.index(for: found.page)
+                    doc.removeNativeAnnotation(pageIndex: idx, annotation: found.ann)
+                }
+                doc.selectedAnnotationID = nil
+            }
+        }
         return menu
     }
 }
