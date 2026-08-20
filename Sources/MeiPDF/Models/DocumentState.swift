@@ -143,6 +143,12 @@ final class DocumentState: Identifiable {
         activeLineWidth = meta.lineWidth
         if let ls = LineStyle(rawValue: meta.lineStyle) { activeLineStyle = ls }
         activeFill = meta.hasFill
+        // Restore a remembered, explicitly-set zoom so reopening keeps the scale
+        // the user last used (instead of always dropping back to auto-fit).
+        if meta.zoomLocked, let z = meta.zoomFactor {
+            zoomLocked = true
+            scaleFactor = CGFloat(z)
+        }
         removedNativeKeys = meta.removedNativeKeys ?? []
         applyRotationToPages()
         rebuildAnnotationsOnPages()
@@ -175,6 +181,8 @@ final class DocumentState: Identifiable {
             lineWidth: activeLineWidth,
             lineStyle: activeLineStyle.rawValue,
             hasFill: activeFill,
+            zoomFactor: zoomLocked ? Double(scaleFactor) : nil,
+            zoomLocked: zoomLocked,
             removedNativeKeys: removedNativeKeys
         )
         MetaStore.save(meta, for: url)
@@ -337,6 +345,7 @@ final class DocumentState: Identifiable {
         case .circle: return .circle
         case .line, .arrow: return .line
         case .ink: return .ink
+        case .squiggle: return .ink
         case .freeText: return .freeText
         case .signature: return .stamp
         }
@@ -413,6 +422,23 @@ final class DocumentState: Identifiable {
                     ann.add(path)
                 }
             }
+        case .squiggle:
+            // A wavy ("波浪线") line: rendered as an ink path whose points follow a
+            // sine wave between the stored endpoints (page coordinates).
+            ann.color = a.color.nsColor
+            configureBorder(ann, width: a.lineWidth, style: a.lineStyle)
+            let s = a.lineStart.map { CGPoint(x: $0.x, y: $0.y) } ?? CGPoint(x: b.minX, y: b.minY)
+            let e = a.lineEnd.map { CGPoint(x: $0.x, y: $0.y) } ?? CGPoint(x: b.maxX, y: b.maxY)
+            let amp = max(CGFloat(a.lineWidth) * 1.5, 4)
+            let pts = Self.squigglePoints(from: s, to: e, amplitude: amp)
+            let path = NSBezierPath()
+            for (i, pt) in pts.enumerated() {
+                let rx = CGFloat(pt.x) - b.minX
+                let ry = CGFloat(pt.y) - b.minY
+                if i == 0 { path.move(to: CGPoint(x: rx, y: ry)) }
+                else { path.line(to: CGPoint(x: rx, y: ry)) }
+            }
+            ann.add(path)
         case .freeText:
             ann.contents = a.contents ?? "文本"
             ann.color = a.color.nsColor
@@ -431,6 +457,29 @@ final class DocumentState: Identifiable {
         border.lineWidth = width
         if let pattern = style.dashPattern { border.dashPattern = pattern }
         ann.border = border
+    }
+
+    /// Sample a sine-wave polyline between two page points — the geometry of a
+    /// "波浪线" (squiggly) annotation. `amplitude` is the peak perpendicular
+    /// offset; the wavelength scales with it so the wave looks even at any length.
+    private static func squigglePoints(from s: CGPoint, to e: CGPoint, amplitude: CGFloat) -> [CGPoint] {
+        let dx = e.x - s.x, dy = e.y - s.y
+        let length = hypot(dx, dy)
+        guard length > 1 else { return [s, e] }
+        let ux = dx / length, uy = dy / length      // unit vector along the line
+        let nx = -uy, ny = ux                        // unit vector perpendicular
+        let wavelength = max(12.0, amplitude * 4)
+        let cycles = max(1.0, length / wavelength)
+        let segments = max(16, Int(cycles * 16))
+        var pts: [CGPoint] = []
+        for i in 0...segments {
+            let t = CGFloat(i) / CGFloat(segments)
+            let along = length * t
+            let offset = amplitude * sin(2 * .pi * cycles * t)
+            pts.append(CGPoint(x: s.x + ux * along + nx * offset,
+                               y: s.y + uy * along + ny * offset))
+        }
+        return pts
     }
 
     private func rebuildAnnotationsOnPages() {
@@ -706,6 +755,49 @@ final class DocumentState: Identifiable {
             createdAt: Date(),
             lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill,
             inkPoints: strokes
+        )
+        addAnnotation(ann)
+    }
+
+    /// Build a note annotation placed at an explicit page point (used by the
+    /// toolbar "笔记" tool, which does not require a text selection). Returns the
+    /// created annotation so the caller can select it and open the text editor.
+    @discardableResult
+    func addNote(at point: CGPoint, pageIndex: Int, color: NSColor) -> Annotation {
+        let size: CGFloat = 22
+        let nb = CGRect(x: point.x, y: point.y - size, width: size, height: size)
+        let ann = Annotation(
+            id: UUID(), pageIndex: pageIndex, type: .note,
+            bounds: CRect(x: Double(nb.minX), y: Double(nb.minY), w: Double(nb.width), h: Double(nb.height)),
+            quadPoints: nil, color: CodableColor(color), contents: "",
+            name: "笔记",
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill
+        )
+        addAnnotation(ann)
+        return ann
+    }
+
+    /// Build a wavy ("波浪线") annotation from two endpoints (page coordinates).
+    /// The bounding box is derived from the generated sine-wave polyline so the
+    /// wave is never clipped, and the endpoints are stored for exact re-rendering.
+    func addSquiggle(start: CGPoint, end: CGPoint, color: NSColor, pageIndex: Int) {
+        let amp = max(activeLineWidth * 1.5, 4)
+        let pts = Self.squigglePoints(from: start, to: end, amplitude: amp)
+        var minX = pts[0].x, minY = pts[0].y, maxX = minX, maxY = minY
+        for p in pts { minX = min(minX, p.x); minY = min(minY, p.y); maxX = max(maxX, p.x); maxY = max(maxY, p.y) }
+        let pad: CGFloat = amp + 2
+        let b = CGRect(x: minX - pad, y: minY - pad,
+                       width: (maxX - minX) + 2 * pad, height: (maxY - minY) + 2 * pad)
+        let ann = Annotation(
+            id: UUID(), pageIndex: pageIndex, type: .squiggle,
+            bounds: CRect(x: Double(b.minX), y: Double(b.minY), w: Double(b.width), h: Double(b.height)),
+            quadPoints: nil, color: CodableColor(color), contents: nil,
+            name: AnnotationType.squiggle.label,
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill,
+            lineStart: CPoint(x: Double(start.x), y: Double(start.y)),
+            lineEnd: CPoint(x: Double(end.x), y: Double(end.y))
         )
         addAnnotation(ann)
     }

@@ -106,7 +106,29 @@ struct ContentView: View {
                     .padding(.top, 12)
             }
         }
+        .background(WindowAccessor())
     }
+}
+
+/// Captures the hosting `NSWindow` and installs `MainWindowDelegate` on it so that
+/// ⌘W / the red traffic-light close the active *tab* while tabs remain and only
+/// close the window on the last tab. Purely a side-effect view (renders nothing).
+struct WindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                context.coordinator.install(on: window)
+            }
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let window = nsView.window, window.delegate !== context.coordinator {
+            context.coordinator.install(on: window)
+        }
+    }
+    func makeCoordinator() -> MainWindowDelegate { MainWindowDelegate() }
 }
 
 struct ToastView: View {

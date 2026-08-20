@@ -206,9 +206,19 @@ final class MeiPDFView: PDFView {
                 ds.activeTool = nil
                 return
             }
+            // Note: drop a note icon at the click point and open its text editor
+            // immediately (the toolbar "笔记" tool does not need a text selection).
+            if tool == .note {
+                let idx = ds.pdfDocument.index(for: page)
+                let ann = ds.addNote(at: p, pageIndex: idx, color: ds.activeColor)
+                ds.activeTool = nil
+                ds.selectedAnnotationID = ann.id
+                ds.editingNote = NoteEditTarget(id: ann.id, pageIndex: idx)
+                return
+            }
             self.dragStart = p
             self.tempPage = page
-                let subtype: PDFAnnotationSubtype = (tool == .circle) ? .circle : (tool == .line || tool == .arrow) ? .line : .square
+                let subtype: PDFAnnotationSubtype = (tool == .circle) ? .circle : (tool == .line || tool == .arrow || tool == .squiggle) ? .line : .square
                 let ann = PDFAnnotation(bounds: NSRect(x: p.x, y: p.y, width: 1, height: 1), forType: subtype, withProperties: nil)
                 ann.color = ds.activeColor
                 if subtype == .line {
@@ -375,7 +385,7 @@ final class MeiPDFView: PDFView {
         let rect = CGRect(x: min(start.x, p.x), y: min(start.y, p.y),
                           width: abs(p.x - start.x), height: abs(p.y - start.y))
         ann.bounds = rect
-        if tool == .line || tool == .arrow {
+        if tool == .line || tool == .arrow || tool == .squiggle {
             // Keep endpoints relative to the (changing) bounds so the live preview
             // tracks the cursor correctly, matching how `makePDFAnnotation` rebuilds
             // the final annotation from its stored absolute points.
@@ -439,13 +449,15 @@ final class MeiPDFView: PDFView {
         let pageIndex = MainActor.assumeIsolated { self.documentState?.pdfDocument.index(for: page) } ?? 0
         let p = pagePoint(event, page: page)
         page.removeAnnotation(ann)
-        if tool == .line || tool == .arrow {
+        if tool == .line || tool == .arrow || tool == .squiggle {
             let len = hypot(p.x - start.x, p.y - start.y)
             if len > 3 {
                 let color = MainActor.assumeIsolated { self.documentState?.activeColor } ?? NSColor.systemYellow
                 MainActor.assumeIsolated {
                     if tool == .arrow {
                         self.documentState?.addArrow(start: start, end: p, color: color, pageIndex: pageIndex)
+                    } else if tool == .squiggle {
+                        self.documentState?.addSquiggle(start: start, end: p, color: color, pageIndex: pageIndex)
                     } else {
                         self.documentState?.addLine(start: start, end: p, color: color, pageIndex: pageIndex)
                     }
@@ -542,6 +554,37 @@ final class SelectionOverlay: NSView {
             let hp = NSBezierPath(rect: r)
             NSColor.white.setFill(); hp.fill()
             NSColor.systemBlue.setStroke(); hp.lineWidth = 1.5; hp.stroke()
+        }
+
+        // For note annotations, render the (possibly long) text content beside the
+        // icon. Our custom click handling suppresses PDFKit's native note popup, so
+        // without this the filled-in text would be invisible on the page.
+        if let noteText = ds.annotations.first(where: { $0.id == id })?.contents,
+           !noteText.isEmpty {
+            let anchor = pts[0] // nw corner in documentView space
+            let font = NSFont.systemFont(ofSize: 11)
+            let maxW: CGFloat = 240
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineBreakMode = .byWordWrapping
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: paragraph
+            ]
+            let str = NSAttributedString(string: noteText, attributes: attrs)
+            let textBox = str.boundingRect(with: NSSize(width: maxW, height: 10000),
+                                           options: [.usesLineFragmentOrigin])
+            let padX: CGFloat = 4
+            let bgRect = NSRect(x: anchor.x + 10,
+                                y: anchor.y - textBox.height - padX,
+                                width: min(textBox.width, maxW) + padX * 2,
+                                height: textBox.height + padX * 2)
+            NSColor.windowBackgroundColor.withAlphaComponent(0.92).setFill()
+            NSBezierPath(roundedRect: bgRect, xRadius: 4, yRadius: 4).fill()
+            str.draw(with: NSRect(x: bgRect.origin.x + padX,
+                                  y: bgRect.origin.y + padX,
+                                  width: maxW, height: textBox.height),
+                     options: [.usesLineFragmentOrigin])
         }
     }
 }
@@ -743,6 +786,7 @@ struct PDFViewWrapper: NSViewRepresentable {
         shapeItem("椭圆", .circle, into: ann)
         shapeItem("直线", .line, into: ann)
         shapeItem("箭头", .arrow, into: ann)
+        shapeItem("波浪线", .squiggle, into: ann)
         shapeItem("手绘", .ink, into: ann)
         shapeItem("文本框", .freeText, into: ann)
         shapeItem("签名", .signature, into: ann)

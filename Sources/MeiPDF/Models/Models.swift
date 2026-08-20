@@ -26,7 +26,7 @@ enum Theme: String, Codable, CaseIterable, Identifiable {
 // MARK: - Annotation types
 
 enum AnnotationType: String, Codable, CaseIterable, Identifiable {
-    case highlight, underline, strikeOut, note, square, circle, line, arrow, ink, freeText, signature
+    case highlight, underline, strikeOut, note, square, circle, line, arrow, ink, freeText, signature, squiggle
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -41,6 +41,7 @@ enum AnnotationType: String, Codable, CaseIterable, Identifiable {
         case .ink: "手绘"
         case .freeText: "文本框"
         case .signature: "签名"
+        case .squiggle: "波浪线"
         }
     }
 }
@@ -183,6 +184,12 @@ struct DocumentMeta: Codable {
     var lineWidth: Double = 2
     var lineStyle: String = LineStyle.solid.rawValue
     var hasFill: Bool = false
+
+    /// Last-used zoom factor (and whether the user has explicitly locked a zoom).
+    /// Restored on reopen so the remembered zoom survives; when `zoomLocked` is
+    /// false the document opens with the app's default-zoom / auto-fit behaviour.
+    var zoomFactor: Double? = nil
+    var zoomLocked: Bool = false
 
     /// Fingerprints of foreign (Preview-authored) annotations the user deleted.
     /// Optional so sidecars written before this field existed still decode.

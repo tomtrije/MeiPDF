@@ -12,5 +12,5 @@ resolve_version() {
     echo "${v#v}"
     return
   fi
-  echo "1.0.13"
+  echo "1.0.14"
 }

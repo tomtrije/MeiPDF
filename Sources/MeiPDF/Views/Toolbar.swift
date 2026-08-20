@@ -279,6 +279,7 @@ struct AnnotationMenu: View {
         case .ink: "pencil.tip"
         case .freeText: "text.cursor"
         case .signature: "signature"
+        case .squiggle: "waveform"
         default: "highlighter"
         }
     }
@@ -319,6 +320,7 @@ struct AnnotationPopover: View {
                 toolButton(.square, "square", "矩形")
                 toolButton(.circle, "circle", "椭圆")
                 toolButton(.line, "line.diagonal", "直线")
+                toolButton(.squiggle, "waveform", "波浪线")
             }
             HStack(spacing: 8) {
                 toolButton(.arrow, "arrow.right", "箭头")

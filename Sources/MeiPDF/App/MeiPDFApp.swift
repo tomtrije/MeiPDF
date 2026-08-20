@@ -23,11 +23,11 @@ struct MeiPDFApp: App {
                 Button("打开…") { openDocument() }
                     .keyboardShortcut("o", modifiers: .command)
             }
-            // Cmd+W closes the active *tab* (not the window) — this is a multi-tab
-            // single-window app, so the default window-close binding is undesirable.
+            // "关闭标签页" (no key equivalent of its own — ⌘W is owned by the window
+            // delegate in `MainWindowDelegate`, which closes the active tab when more
+            // than one is open and only closes the window on the last tab).
             CommandGroup(after: .windowArrangement) {
-                Button("关闭标签页") { closeActiveTab() }
-                    .keyboardShortcut("w", modifiers: .command)
+                Button("关闭标签页") { closeActiveTabOrWindow() }
             }
             CommandGroup(after: .printItem) {
                 Button("打印…") { NotificationCenter.default.post(name: .meiPDFRequestPrint, object: nil) }
@@ -198,9 +198,6 @@ struct MeiPDFApp: App {
     private func activeDoc() -> DocumentState? {
         appState.selectedDocument(id: appState.selectedID)
     }
-    private func closeActiveTab() {
-        if let d = activeDoc() { appState.close(d) }
-    }
     private func mark(_ type: AnnotationType) {
         guard let d = activeDoc() else { return }
         switch type {
@@ -334,6 +331,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for u in urls { _ = appState.open(u) }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+}
+
+/// Shared close logic for ⌘W / the red traffic-light / the "关闭标签页" menu item:
+/// close only the active tab while more than one is open; on the last tab, close
+/// the document (persisting it) and then the window.
+@MainActor
+func closeActiveTabOrWindow() {
+    guard let active = appState.selectedDocument(id: appState.selectedID) else {
+        NSApplication.shared.keyWindow?.close()
+        return
+    }
+    let only = appState.documents.count <= 1
+    appState.close(active)
+    if only {
+        NSApplication.shared.keyWindow?.close()
+    }
+}
+
+/// Intercepts a window's close so ⌘W / the red button close the active *tab*
+/// instead of the whole window when tabs remain. Any delegate methods we don't
+/// implement are forwarded to the previous (SwiftUI) delegate.
+@MainActor
+final class MainWindowDelegate: NSObject, NSWindowDelegate {
+    /// The previous (SwiftUI) window delegate. All access happens on the main
+    /// thread, so `nonisolated(unsafe)` is safe and lets the forwarding methods
+    /// read it from their nonisolated context.
+    private nonisolated(unsafe) var previous: NSWindowDelegate?
+
+    func install(on window: NSWindow) {
+        guard window.delegate !== self else { return }
+        previous = window.delegate
+        window.delegate = self
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        let docs = appState.documents
+        if docs.count > 1 {
+            if let active = appState.selectedDocument(id: appState.selectedID) {
+                appState.close(active)
+            }
+            return false
+        }
+        if let active = appState.selectedDocument(id: appState.selectedID) {
+            appState.close(active)
+        }
+        return true
+    }
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || (previous?.responds(to: aSelector) ?? false)
+    }
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        previous
+    }
 }
 
 extension Notification.Name {
