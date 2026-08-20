@@ -8,6 +8,8 @@ struct ContentView: View {
     @State private var showPassword = false
     @State private var passwordInput = ""
     @State private var showPreferences = false
+    /// Live horizontal offset while dragging the sidebar divider.
+    @GestureState private var sidebarDragOffset: CGFloat = 0
 
     private var doc: DocumentState? { appState.selectedDocument(id: appState.selectedID) }
 
@@ -29,9 +31,27 @@ struct ContentView: View {
                 HStack(spacing: 0) {
                     if appState.showSidebar {
                         Sidebar(doc: doc, tab: $appState.sidebarTab)
-                            .frame(width: 260)
+                            .frame(width: max(180, min(520, appState.sidebarWidth + sidebarDragOffset)))
                             .id(doc.id)
-                        Divider()
+                        // 侧栏宽度拖拽手柄。
+                        Rectangle()
+                            .fill(Color.clear)
+                            .frame(width: 6)
+                            .contentShape(Rectangle())
+                            .overlay(alignment: .trailing) { Divider() }
+                            .onHover { hovering in
+                                if hovering { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                            }
+                            .gesture(
+                                DragGesture()
+                                    .updating($sidebarDragOffset) { value, state, _ in
+                                        state = value.translation.width
+                                    }
+                                    .onEnded { value in
+                                        appState.sidebarWidth = max(180, min(520, appState.sidebarWidth + value.translation.width))
+                                        appState.saveSidebarWidth()
+                                    }
+                            )
                     }
                     PDFViewWrapper(doc: doc)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)

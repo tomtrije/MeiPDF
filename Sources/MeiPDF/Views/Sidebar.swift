@@ -188,9 +188,10 @@ struct BookmarkRow: View {
 
     var body: some View {
         HStack {
-            Button { doc.goToPage(page) } label: { Image(systemName: "doc.text").frame(width: 18) }
-                .buttonStyle(.plain)
-                .help("定位到第 \(page + 1) 页")
+            // 图标与工具栏书签按钮一致：当前页已书签 = fill 态。
+            Image(systemName: isCurrentPage ? "bookmark.fill" : "bookmark")
+                .frame(width: 18)
+                .foregroundStyle(isCurrentPage ? Color.accentColor : Color.secondary)
 
             if editing {
                 TextField("名称", text: $draft)
@@ -299,13 +300,14 @@ struct AnnotationsPanel: View {
                     }
                     ForEach(nativeRows) { item in
                         HStack {
+                            // 对应标注类型的图标（与工具栏下拉面板一致）。
+                            Image(systemName: nativeSymbol(item.annotation))
+                                .frame(width: 18)
+                                .foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("第 \(item.pageIndex + 1) 页 · \(typeLabel(item.annotation))").font(.subheadline)
                             }
                             Spacer()
-                            Button { doc.goToPage(item.pageIndex) } label: { Image(systemName: "magnifyingglass") }
-                                .buttonStyle(.plain)
-                                .help("定位")
                             Button { doc.removeNativeAnnotation(pageIndex: item.pageIndex, annotation: item.annotation) }
                                 label: { Image(systemName: "trash") }
                                 .buttonStyle(.plain)
@@ -342,6 +344,22 @@ struct AnnotationsPanel: View {
         }
     }
 
+    /// SF Symbol for a foreign (native) annotation, matching the toolbar mapping.
+    private func nativeSymbol(_ ann: PDFAnnotation) -> String {
+        switch ann.type {
+        case "Highlight": "highlighter"
+        case "Underline": "underline"
+        case "StrikeOut": "strikethrough"
+        case "Text": "note.text"
+        case "Square": "square"
+        case "Circle": "circle"
+        case "Line": "line.diagonal"
+        case "Ink": "pencil.tip"
+        case "FreeText": "text.cursor"
+        default: "square.dashed"
+        }
+    }
+
     private func export() {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType.plainText]
@@ -367,9 +385,10 @@ struct AnnotationRow: View {
 
     var body: some View {
         HStack {
-            Button { select() } label: { Image(systemName: "magnifyingglass").frame(width: 18) }
-                .buttonStyle(.plain)
-                .help("定位")
+            // 对应标注类型的图标（与工具栏下拉面板一致），非放大镜。
+            Image(systemName: annotation.type.symbolName)
+                .frame(width: 18)
+                .foregroundStyle(.secondary)
             if editing {
                 VStack(alignment: .leading, spacing: 4) {
                     TextField("名称", text: $nameDraft)

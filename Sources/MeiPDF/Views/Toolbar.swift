@@ -271,18 +271,7 @@ struct AnnotationMenu: View {
     }
 
     private func icon(for t: AnnotationType) -> String {
-        switch t {
-        case .square: "square"
-        case .circle: "circle"
-        case .line: "line.diagonal"
-        case .arrow: "arrow.right"
-        case .ink: "pencil.tip"
-        case .freeText: "text.cursor"
-        case .signature: "signature"
-        case .squiggle: "waveform"
-        case .plainText: "textformat"
-        default: "highlighter"
-        }
+        t.symbolName
     }
 }
 

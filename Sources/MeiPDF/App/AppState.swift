@@ -32,10 +32,13 @@ final class AppState {
     var showSidebar: Bool = true
     /// Which sidebar tab is active.
     var sidebarTab: SidebarTab = .thumbnails
+    /// Sidebar width (points) — adjustable by dragging the divider.
+    var sidebarWidth: CGFloat = 260
     /// Set by the Edit menu's "查找…" (⌘F) to focus the toolbar search field.
     var focusSearchRequested: Bool = false
 
     private let recentsKey = "meipdf.recentFiles"
+    private let sidebarWidthKey = "meipdf.sidebarWidth"
 
     // MARK: Toast
 
@@ -50,6 +53,8 @@ final class AppState {
 
     init() {
         loadRecents()
+        let stored = UserDefaults.standard.double(forKey: sidebarWidthKey)
+        if stored >= 180, stored <= 520 { sidebarWidth = CGFloat(stored) }
     }
 
     // MARK: Opening
@@ -158,6 +163,10 @@ final class AppState {
         if let data = try? JSONEncoder().encode(recentFiles) {
             UserDefaults.standard.set(data, forKey: recentsKey)
         }
+    }
+
+    func saveSidebarWidth() {
+        UserDefaults.standard.set(Double(sidebarWidth), forKey: sidebarWidthKey)
     }
 }
 

@@ -45,6 +45,25 @@ enum AnnotationType: String, Codable, CaseIterable, Identifiable {
         case .plainText: "添加文本"
         }
     }
+    /// SF Symbol for the annotation type — shared by the toolbar and the sidebar
+    /// so every surface shows the same icon for the same annotation type.
+    var symbolName: String {
+        switch self {
+        case .highlight: "highlighter"
+        case .underline: "underline"
+        case .strikeOut: "strikethrough"
+        case .note: "note.text"
+        case .square: "square"
+        case .circle: "circle"
+        case .line: "line.diagonal"
+        case .arrow: "arrow.right"
+        case .ink: "pencil.tip"
+        case .freeText: "text.cursor"
+        case .signature: "signature"
+        case .squiggle: "waveform"
+        case .plainText: "textformat"
+        }
+    }
 }
 
 // MARK: - Annotation line styles
