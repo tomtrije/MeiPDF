@@ -41,6 +41,104 @@ extension NSImage {
     }
 }
 
+/// A note annotation that ALWAYS renders its text: a small icon + the contents in
+/// a rounded bubble. PDFKit's plain `.text` note only shows an icon and hides the
+/// contents behind a popup (which our custom click handling suppresses), so the
+/// filled-in text was invisible. This subclass draws both, with colors that adapt
+/// to the current appearance (light/dark).
+final class NoteBubbleAnnotation: PDFAnnotation {
+    var noteColor: NSColor = .systemYellow
+
+    init(bounds: CGRect, color: NSColor, userName: String) {
+        super.init(bounds: bounds, forType: .text, withProperties: nil)
+        self.noteColor = color
+        self.userName = userName
+    }
+
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        // Do NOT call super — the default text-note rendering draws only the icon.
+        let r = bounds
+        context.saveGState()
+        // Convert to a flipped (Y-down) local space anchored at the bounds' top-left
+        // so AppKit bezier + text drawing behaves naturally.
+        context.translateBy(x: r.minX, y: r.maxY)
+        context.scaleBy(x: 1, y: -1)
+        let nsctx = NSGraphicsContext(cgContext: context, flipped: true)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = nsctx
+
+        let local = CGRect(x: 0, y: 0, width: r.width, height: r.height)
+        let text = contents ?? ""
+
+        // Bubble background: adaptive surface tinted with the note colour.
+        let base = NSColor.windowBackgroundColor.withAlphaComponent(0.92)
+        let tinted = base.blended(withFraction: 0.15, of: noteColor.withAlphaComponent(0.35)) ?? base
+        tinted.setFill()
+        NSBezierPath(roundedRect: local, xRadius: 4, yRadius: 4).fill()
+        noteColor.withAlphaComponent(0.45).setStroke()
+        let border = NSBezierPath(roundedRect: local.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
+        border.lineWidth = 1
+        border.stroke()
+
+        // Icon: a small colour chip with two "text lines" at the top-left.
+        let icon = CGRect(x: 5, y: 5, width: 12, height: 12)
+        noteColor.setFill()
+        NSBezierPath(roundedRect: icon, xRadius: 2, yRadius: 2).fill()
+        NSColor.windowBackgroundColor.withAlphaComponent(0.85).setFill()
+        NSBezierPath(rect: CGRect(x: icon.minX + 2.5, y: icon.minY + 2.5, width: icon.width - 5, height: 1.5)).fill()
+        NSBezierPath(rect: CGRect(x: icon.minX + 2.5, y: icon.minY + 5.5, width: icon.width - 5, height: 1.5)).fill()
+
+        if !text.isEmpty {
+            let font = NSFont.systemFont(ofSize: 12)
+            let textRect = CGRect(x: icon.maxX + 5, y: 4, width: max(local.width - icon.maxX - 9, 20), height: max(local.height - 8, 20))
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
+            let str = NSAttributedString(string: text, attributes: attrs)
+            str.draw(with: textRect, options: [.usesLineFragmentOrigin])
+        }
+
+        NSGraphicsContext.restoreGraphicsState()
+        context.restoreGState()
+    }
+}
+
+/// Preview-style "添加文本": draws ONLY the text on the page — no border, no
+/// background — in the user-chosen annotation colour.
+final class PlainTextAnnotation: PDFAnnotation {
+    init(bounds: CGRect, color: NSColor, userName: String) {
+        super.init(bounds: bounds, forType: .freeText, withProperties: nil)
+        self.userName = userName
+        self.plainColor = color
+    }
+
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+
+    var plainColor: NSColor = .systemRed
+
+    override func draw(with box: PDFDisplayBox, in context: CGContext) {
+        let r = bounds
+        context.saveGState()
+        context.translateBy(x: r.minX, y: r.maxY)
+        context.scaleBy(x: 1, y: -1)
+        let nsctx = NSGraphicsContext(cgContext: context, flipped: true)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = nsctx
+
+        let text = contents ?? ""
+        if !text.isEmpty {
+            let font = NSFont.systemFont(ofSize: 14)
+            let textRect = CGRect(x: 1, y: 1, width: max(r.width - 2, 10), height: max(r.height - 2, 10))
+            let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: plainColor]
+            let str = NSAttributedString(string: text, attributes: attrs)
+            str.draw(with: textRect, options: [.usesLineFragmentOrigin])
+        }
+
+        NSGraphicsContext.restoreGraphicsState()
+        context.restoreGState()
+    }
+}
+
 /// The eight resize handles of a selected annotation (corners + edge midpoints).
 fileprivate enum Handle: Int { case nw, n, ne, e, se, s, sw, w }
 
@@ -165,13 +263,15 @@ final class MeiPDFView: PDFView {
             MainActor.assumeIsolated {
                 let ds = self.documentState!
                 let p = self.pagePoint(event, page: page)
-                // Text box: click to drop an editable free-text annotation, then open
+                // Text box / 添加文本: click to drop an editable annotation, then open
                 // the inline text editor so the user can type immediately.
-                if tool == .freeText {
+                if tool == .freeText || tool == .plainText {
                     let w: CGFloat = 150, h: CGFloat = 30
                     let b = CGRect(x: p.x, y: p.y - h, width: w, height: h)
                     let idx = ds.pdfDocument.index(for: page)
-                    let ann = ds.addFreeText(bounds: b, color: ds.activeColor, pageIndex: idx)
+                    let ann = tool == .plainText
+                        ? ds.addPlainText(bounds: b, color: ds.activeColor, pageIndex: idx)
+                        : ds.addFreeText(bounds: b, color: ds.activeColor, pageIndex: idx)
                     ds.activeTool = nil
                     ds.selectedAnnotationID = ann.id
                     ds.editingFreeText = NoteEditTarget(id: ann.id, pageIndex: idx)
@@ -555,37 +655,6 @@ final class SelectionOverlay: NSView {
             NSColor.white.setFill(); hp.fill()
             NSColor.systemBlue.setStroke(); hp.lineWidth = 1.5; hp.stroke()
         }
-
-        // For note annotations, render the (possibly long) text content beside the
-        // icon. Our custom click handling suppresses PDFKit's native note popup, so
-        // without this the filled-in text would be invisible on the page.
-        if let noteText = ds.annotations.first(where: { $0.id == id })?.contents,
-           !noteText.isEmpty {
-            let anchor = pts[0] // nw corner in documentView space
-            let font = NSFont.systemFont(ofSize: 11)
-            let maxW: CGFloat = 240
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineBreakMode = .byWordWrapping
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: font,
-                .foregroundColor: NSColor.labelColor,
-                .paragraphStyle: paragraph
-            ]
-            let str = NSAttributedString(string: noteText, attributes: attrs)
-            let textBox = str.boundingRect(with: NSSize(width: maxW, height: 10000),
-                                           options: [.usesLineFragmentOrigin])
-            let padX: CGFloat = 4
-            let bgRect = NSRect(x: anchor.x + 10,
-                                y: anchor.y - textBox.height - padX,
-                                width: min(textBox.width, maxW) + padX * 2,
-                                height: textBox.height + padX * 2)
-            NSColor.windowBackgroundColor.withAlphaComponent(0.92).setFill()
-            NSBezierPath(roundedRect: bgRect, xRadius: 4, yRadius: 4).fill()
-            str.draw(with: NSRect(x: bgRect.origin.x + padX,
-                                  y: bgRect.origin.y + padX,
-                                  width: maxW, height: textBox.height),
-                     options: [.usesLineFragmentOrigin])
-        }
     }
 }
 
@@ -800,6 +869,7 @@ struct PDFViewWrapper: NSViewRepresentable {
         shapeItem("波浪线", .squiggle, into: ann)
         shapeItem("手绘", .ink, into: ann)
         shapeItem("文本框", .freeText, into: ann)
+        shapeItem("添加文本", .plainText, into: ann)
         shapeItem("签名", .signature, into: ann)
         let annTop = NSMenuItem(title: "标注工具", action: nil, keyEquivalent: "")
         annTop.submenu = ann

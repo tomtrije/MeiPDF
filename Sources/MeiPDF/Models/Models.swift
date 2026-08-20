@@ -26,7 +26,7 @@ enum Theme: String, Codable, CaseIterable, Identifiable {
 // MARK: - Annotation types
 
 enum AnnotationType: String, Codable, CaseIterable, Identifiable {
-    case highlight, underline, strikeOut, note, square, circle, line, arrow, ink, freeText, signature, squiggle
+    case highlight, underline, strikeOut, note, square, circle, line, arrow, ink, freeText, signature, squiggle, plainText
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -42,6 +42,7 @@ enum AnnotationType: String, Codable, CaseIterable, Identifiable {
         case .freeText: "文本框"
         case .signature: "签名"
         case .squiggle: "波浪线"
+        case .plainText: "添加文本"
         }
     }
 }

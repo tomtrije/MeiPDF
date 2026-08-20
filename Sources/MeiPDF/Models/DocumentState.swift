@@ -352,6 +352,7 @@ final class DocumentState: Identifiable {
         case .ink: return .ink
         case .squiggle: return .ink
         case .freeText: return .freeText
+        case .plainText: return .freeText
         case .signature: return .stamp
         }
     }
@@ -369,6 +370,29 @@ final class DocumentState: Identifiable {
             }
             return nil
         }
+        // Note: a custom annotation that always renders icon + text in a bubble
+        // (a plain `.text` note hides its contents behind a popup — invisible here).
+        if a.type == .note {
+            let font = NSFont.systemFont(ofSize: 12)
+            let size = Self.noteBubbleSize(for: a.contents ?? "", font: font, maxWidth: 240)
+            let nb = CGRect(origin: b.origin, size: size)
+            let ann = NoteBubbleAnnotation(bounds: nb, color: a.color.nsColor,
+                                           userName: "MeiPDF:" + a.id.uuidString)
+            ann.contents = a.contents ?? ""
+            ann.shouldDisplay = showAnnotations
+            return ann
+        }
+        // 添加文本: Preview-style pure text, no border / background.
+        if a.type == .plainText {
+            let font = NSFont.systemFont(ofSize: 14)
+            let size = Self.plainTextSize(for: a.contents ?? "", font: font, maxWidth: 400)
+            let nb = CGRect(origin: b.origin, size: size)
+            let ann = PlainTextAnnotation(bounds: nb, color: a.color.nsColor,
+                                          userName: "MeiPDF:" + a.id.uuidString)
+            ann.contents = a.contents ?? ""
+            ann.shouldDisplay = showAnnotations
+            return ann
+        }
         let ann = PDFAnnotation(bounds: b, forType: subtype(for: a.type), withProperties: nil)
         // Tag ours so the sidebar can tell them apart from annotations authored by
         // Preview / other editors, and so dragging / deletion can find them back.
@@ -381,10 +405,8 @@ final class DocumentState: Identifiable {
                 ann.quadrilateralPoints = quads.map { NSValue(point: CGPoint(x: $0.x, y: $0.y)) }
             }
             ann.color = a.color.nsColor
-        case .note:
-            ann.contents = a.contents ?? ""
-            ann.color = a.color.nsColor
-            ann.iconType = .note
+        case .note, .plainText:
+            break // handled early (custom subclasses above)
         case .square, .circle:
             ann.color = a.color.nsColor
             configureBorder(ann, width: a.lineWidth, style: a.lineStyle)
@@ -462,6 +484,34 @@ final class DocumentState: Identifiable {
         border.lineWidth = width
         if let pattern = style.dashPattern { border.dashPattern = pattern }
         ann.border = border
+    }
+
+    /// Measure wrapped text (single-line unless it exceeds `maxWidth`).
+    private static func textLayoutSize(for text: String, font: NSFont, maxWidth: CGFloat) -> CGSize {
+        guard !text.isEmpty else { return CGSize(width: 1, height: 1) }
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        let rect = (text as NSString).boundingRect(
+            with: NSSize(width: maxWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin], attributes: attrs)
+        return CGSize(width: ceil(rect.width), height: ceil(rect.height))
+    }
+
+    /// Size of the note bubble: a small icon column + the wrapped text.
+    static func noteBubbleSize(for text: String, font: NSFont, maxWidth: CGFloat) -> CGSize {
+        let iconW: CGFloat = 17, padX: CGFloat = 9, padY: CGFloat = 6
+        if text.isEmpty { return CGSize(width: 22, height: 22) }
+        let ts = textLayoutSize(for: text, font: font, maxWidth: maxWidth - iconW - padX * 2)
+        return CGSize(width: min(max(ts.width + iconW + padX * 2, 40), maxWidth),
+                      height: max(ts.height + padY * 2, 22))
+    }
+
+    /// Size of a pure-text annotation: just the wrapped text plus a little padding.
+    static func plainTextSize(for text: String, font: NSFont, maxWidth: CGFloat) -> CGSize {
+        let padX: CGFloat = 2, padY: CGFloat = 2
+        if text.isEmpty { return CGSize(width: 60, height: 22) }
+        let ts = textLayoutSize(for: text, font: font, maxWidth: maxWidth - padX * 2)
+        return CGSize(width: min(max(ts.width + padX * 2, 10), maxWidth),
+                      height: max(ts.height + padY * 2, 16))
     }
 
     /// Sample a sine-wave polyline between two page points — the geometry of a
@@ -551,14 +601,26 @@ final class DocumentState: Identifiable {
     /// Update the text contents of one of our annotations (used by the note / free
     /// text editor popover). The change is mirrored onto the live page annotation
     /// so the new text shows immediately and is included on export — without a full
-    /// rebuild (which would drop the current selection / handles).
+    /// rebuild (which would drop the current selection / handles). Note / 添加文本
+    /// bubbles also auto-fit their bounds to the new text.
     func updateAnnotationContents(id: UUID, contents: String) {
         guard let idx = annotations.firstIndex(where: { $0.id == id }) else { return }
         annotations[idx].contents = contents
         if let page = pdfDocument.page(at: annotations[idx].pageIndex) {
             let key = "MeiPDF:" + id.uuidString
+            let isNote = annotations[idx].type == .note
+            let isPlain = annotations[idx].type == .plainText
+            let newSize: CGSize? = isNote
+                ? Self.noteBubbleSize(for: contents, font: .systemFont(ofSize: 12), maxWidth: 240)
+                : isPlain
+                    ? Self.plainTextSize(for: contents, font: .systemFont(ofSize: 14), maxWidth: 400)
+                    : nil
             for ann in page.annotations where ann.userName == key {
                 ann.contents = contents
+                if let size = newSize {
+                    // Keep the top-left anchored so the bubble grows down/right.
+                    ann.bounds = NSRect(origin: ann.bounds.origin, size: size)
+                }
             }
         }
         persist()
@@ -817,6 +879,23 @@ final class DocumentState: Identifiable {
             bounds: CRect(x: Double(bounds.minX), y: Double(bounds.minY), w: Double(bounds.width), h: Double(bounds.height)),
             quadPoints: nil, color: CodableColor(color), contents: "文本",
             name: AnnotationType.freeText.label,
+            createdAt: Date(),
+            lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill
+        )
+        addAnnotation(ann)
+        return ann
+    }
+
+    /// Build a Preview-style pure-text ("添加文本") annotation at an explicit bounds.
+    /// Returns the created annotation so the caller can select it and open the
+    /// inline text editor immediately after a click-drop.
+    @discardableResult
+    func addPlainText(bounds: CGRect, color: NSColor, pageIndex: Int) -> Annotation {
+        let ann = Annotation(
+            id: UUID(), pageIndex: pageIndex, type: .plainText,
+            bounds: CRect(x: Double(bounds.minX), y: Double(bounds.minY), w: Double(bounds.width), h: Double(bounds.height)),
+            quadPoints: nil, color: CodableColor(color), contents: "",
+            name: AnnotationType.plainText.label,
             createdAt: Date(),
             lineWidth: activeLineWidth, lineStyle: activeLineStyle, hasFill: activeFill
         )

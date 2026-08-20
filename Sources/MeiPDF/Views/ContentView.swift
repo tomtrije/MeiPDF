@@ -317,8 +317,15 @@ struct NoteEditPopover: View {
 
     var body: some View {
         let ann = doc.annotations.first(where: { $0.id == target.id })
+        let kind: String = {
+            switch ann?.type {
+            case .freeText: "编辑文本框"
+            case .plainText: "编辑文本"
+            default: "编辑笔记"
+            }
+        }()
         return VStack(alignment: .leading, spacing: 8) {
-            Text("第 \(target.pageIndex + 1) 页 · \(ann?.type == .freeText ? "编辑文本框" : "编辑笔记")").font(.headline)
+            Text("第 \(target.pageIndex + 1) 页 · \(kind)").font(.headline)
             TextEditor(text: $text)
                 .frame(minWidth: 260, minHeight: 120)
                 .focused($focused)

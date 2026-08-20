@@ -280,6 +280,7 @@ struct AnnotationMenu: View {
         case .freeText: "text.cursor"
         case .signature: "signature"
         case .squiggle: "waveform"
+        case .plainText: "textformat"
         default: "highlighter"
         }
     }
@@ -326,6 +327,7 @@ struct AnnotationPopover: View {
                 toolButton(.arrow, "arrow.right", "箭头")
                 toolButton(.ink, "pencil.tip", "手绘")
                 toolButton(.freeText, "text.cursor", "文本框")
+                toolButton(.plainText, "textformat", "添加文本")
             }
             HStack(spacing: 8) {
                 Button {
