@@ -1,8 +1,19 @@
 import SwiftUI
 import PDFKit
 
+/// 三级配置的「配置」子 tab。只有**可修改的配置**出现在这里；只读状态（当前页、
+/// 缩放锁定、书签/标注/搜索计数等）属于「状态」，只在该文档的「配置与状态总览」
+/// 弹层中展示，不在这里。
+enum ConfigSection: String, CaseIterable, Identifiable {
+    case appDefaults = "应用默认"
+    case fileLevel = "当前文档"
+    case pageLevel = "页面状态"
+    var id: String { rawValue }
+}
+
 struct PreferencesView: View {
     @Environment(AppState.self) private var appState
+    @State private var configSection: ConfigSection = .appDefaults
 
     private let modes: [(PDFDisplayMode, String)] = [
         (.singlePage, "单页"),
@@ -114,9 +125,6 @@ struct PreferencesView: View {
     private func docScaleBinding(_ d: DocumentState) -> Binding<Double> {
         Binding(get: { d.scaleFactor }, set: { d.setScale($0) })
     }
-    private func docPageBinding(_ d: DocumentState) -> Binding<Int> {
-        Binding(get: { d.currentPage + 1 }, set: { d.goToPage($0 - 1) })
-    }
     private func docShowAnnotationsBinding(_ d: DocumentState) -> Binding<Bool> {
         Binding(get: { d.showAnnotations }, set: { d.showAnnotations = $0; d.persist() })
     }
@@ -124,156 +132,20 @@ struct PreferencesView: View {
     var body: some View {
         TabView {
             Form {
-                Section("默认外观") {
-                    Picker("主题", selection: defaultTheme) {
-                        ForEach(Theme.allCases) { Text($0.label).tag($0) }
-                    }
-                    Picker("默认版式", selection: defaultDisplayMode) {
-                        ForEach(modes, id: \.0) { Text($0.1).tag($0.0) }
-                    }
-                    Picker("默认滚动方向", selection: defaultDisplayDirection) {
-                        Text("纵向").tag(PDFDisplayDirection.vertical)
-                        Text("横向").tag(PDFDisplayDirection.horizontal)
-                    }
+                Picker("配置作用域", selection: $configSection) {
+                    ForEach(ConfigSection.allCases) { Text($0.rawValue).tag($0) }
                 }
-                Section("行为") {
-                    Toggle("记住阅读位置", isOn: rememberLastPosition)
-                    Toggle("启用触控板手势", isOn: enableGestures)
-                }
-                Section("默认打开") {
-                    Picker("缩略图大小", selection: thumbnailSizeBinding) {
-                        ForEach(ThumbSize.allCases) { Text($0.label).tag($0) }
-                    }
-                    Picker("默认缩放", selection: defaultZoomBinding) {
-                        ForEach(DefaultZoom.allCases) { Text($0.label).tag($0) }
-                    }
-                    Picker("开始页", selection: startPageBinding) {
-                        ForEach(StartPageMode.allCases) { Text($0.label).tag($0) }
-                    }
-                    Toggle("导出时包含标注", isOn: exportWithAnnotationsBinding)
-                }
-                Section("幻灯片放映") {
-                    Picker("播放间隔", selection: slideshowIntervalBinding) {
-                        Text("3 秒").tag(3.0)
-                        Text("5 秒").tag(5.0)
-                        Text("8 秒").tag(8.0)
-                        Text("10 秒").tag(10.0)
-                    }
-                    Toggle("循环播放", isOn: slideshowLoopBinding)
-                }
-                Section("更新") {
-                    Toggle("自动检查更新", isOn: checkUpdates)
-                    Button("检查更新…") { checkForUpdates() }
-                }
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("通用", systemImage: "gearshape") }
+                .pickerStyle(.segmented)
+                .labelsHidden()
 
-            Form {
-                Section("默认标注样式（新建标注时套用）") {
-                    ColorPicker("颜色", selection: defaultColorBinding)
-                    Picker("粗细", selection: defaultLineWidth) {
-                        Text("细").tag(1.0)
-                        Text("中").tag(2.0)
-                        Text("粗").tag(4.0)
-                        Text("特粗").tag(8.0)
-                    }
-                    .pickerStyle(.segmented)
-                    Picker("线型", selection: defaultLineStyle) {
-                        ForEach(LineStyle.allCases) { Text($0.label).tag($0) }
-                    }
-                    Toggle("填充（矩形 / 椭圆）", isOn: defaultFill)
-                }
-                Section {
-                    Button("将当前打开文档的设置存为默认") {
-                        if let d = appState.selectedDocument(id: appState.selectedID) {
-                            d.saveAsDefault()
-                            appState.showToast("已保存为默认设置")
-                        } else {
-                            appState.showToast("请先打开一个文档")
-                        }
-                    }
-                } header: {
-                    Text("应用当前为默认")
+                switch configSection {
+                case .appDefaults: appDefaultsForm
+                case .fileLevel: fileLevelForm
+                case .pageLevel: pageLevelForm
                 }
             }
             .formStyle(.grouped)
-            .tabItem { Label("默认设置", systemImage: "slider.horizontal.3") }
-
-            Form {
-                if let d = appState.selectedDocument(id: appState.selectedID) {
-                    Section("文件级设置（仅当前文档，随文档记忆）") {
-                        Picker("主题", selection: docThemeBinding(d)) {
-                            ForEach(Theme.allCases) { Text($0.label).tag($0) }
-                        }
-                        Picker("版式", selection: docModeBinding(d)) {
-                            ForEach(modes, id: \.0) { Text($0.1).tag($0.0) }
-                        }
-                        Picker("滚动方向", selection: docDirectionBinding(d)) {
-                            Text("纵向").tag(PDFDisplayDirection.vertical)
-                            Text("横向").tag(PDFDisplayDirection.horizontal)
-                        }
-                        Picker("旋转", selection: docRotationBinding(d)) {
-                            Text("0°").tag(0)
-                            Text("90°").tag(90)
-                            Text("180°").tag(180)
-                            Text("270°").tag(270)
-                        }
-                        ColorPicker("标注颜色", selection: docColorBinding(d))
-                        Picker("线宽", selection: docWidthBinding(d)) {
-                            Text("细").tag(1.0)
-                            Text("中").tag(2.0)
-                            Text("粗").tag(4.0)
-                            Text("特粗").tag(8.0)
-                        }
-                        .pickerStyle(.segmented)
-                        Picker("线型", selection: docStyleBinding(d)) {
-                            ForEach(LineStyle.allCases) { Text($0.label).tag($0) }
-                        }
-                        Toggle("填充（矩形 / 椭圆）", isOn: docFillBinding(d))
-                    }
-                } else {
-                    Text("请先打开一个文档，再编辑它的文件级设置。").foregroundStyle(.secondary)
-                }
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("当前文档", systemImage: "doc.text") }
-
-            Form {
-                if let d = appState.selectedDocument(id: appState.selectedID) {
-                    Section("缩放（当前文档实时状态）") {
-                        Picker("缩放倍数", selection: docScaleBinding(d)) {
-                            ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0], id: \.self) { f in
-                                Text("\(Int(f * 100))%").tag(f)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        HStack {
-                            Button("适应宽度") { d.fitWidth() }
-                            Button("适应页面") { d.fitPage() }
-                            Button("适应高度") { d.fitHeight() }
-                            Button("实际大小") { d.actualSize() }
-                        }
-                    }
-                    Section("页面") {
-                        Stepper("当前页：\(d.currentPage + 1) / \(d.pageCount)",
-                                value: docPageBinding(d), in: 1...max(d.pageCount, 1))
-                    }
-                    Section("显示") {
-                        Toggle("显示高亮与备注", isOn: docShowAnnotationsBinding(d))
-                    }
-                    Section("状态") {
-                        LabeledContent("缩放锁定", value: d.zoomLocked ? "是" : "否")
-                        LabeledContent("书签数", value: "\(d.bookmarks.count)")
-                        LabeledContent("标注数", value: "\(d.annotations.count)")
-                        LabeledContent("搜索结果", value: "\(d.searchMatches.count)")
-                    }
-                } else {
-                    Text("请先打开一个文档，再查看/修改它的页面状态。").foregroundStyle(.secondary)
-                }
-            }
-            .formStyle(.grouped)
-            .tabItem { Label("页面状态", systemImage: "gauge") }
+            .tabItem { Label("配置", systemImage: "gearshape") }
 
             Form {
                 Section("快捷键") {
@@ -292,6 +164,143 @@ struct PreferencesView: View {
             }
             .formStyle(.grouped)
             .tabItem { Label("快捷键", systemImage: "command") }
+        }
+    }
+
+    // MARK: 配置子 tab —— 应用级默认（作用域：全局）
+
+    @ViewBuilder
+    private var appDefaultsForm: some View {
+        Section("默认外观") {
+            Picker("主题", selection: defaultTheme) {
+                ForEach(Theme.allCases) { Text($0.label).tag($0) }
+            }
+            Picker("默认版式", selection: defaultDisplayMode) {
+                ForEach(modes, id: \.0) { Text($0.1).tag($0.0) }
+            }
+            Picker("默认滚动方向", selection: defaultDisplayDirection) {
+                Text("纵向").tag(PDFDisplayDirection.vertical)
+                Text("横向").tag(PDFDisplayDirection.horizontal)
+            }
+        }
+        Section("行为") {
+            Toggle("记住阅读位置", isOn: rememberLastPosition)
+            Toggle("启用触控板手势", isOn: enableGestures)
+        }
+        Section("默认打开") {
+            Picker("缩略图大小", selection: thumbnailSizeBinding) {
+                ForEach(ThumbSize.allCases) { Text($0.label).tag($0) }
+            }
+            Picker("默认缩放", selection: defaultZoomBinding) {
+                ForEach(DefaultZoom.allCases) { Text($0.label).tag($0) }
+            }
+            Picker("开始页", selection: startPageBinding) {
+                ForEach(StartPageMode.allCases) { Text($0.label).tag($0) }
+            }
+            Toggle("导出时包含标注", isOn: exportWithAnnotationsBinding)
+        }
+        Section("幻灯片放映") {
+            Picker("播放间隔", selection: slideshowIntervalBinding) {
+                Text("3 秒").tag(3.0)
+                Text("5 秒").tag(5.0)
+                Text("8 秒").tag(8.0)
+                Text("10 秒").tag(10.0)
+            }
+            Toggle("循环播放", isOn: slideshowLoopBinding)
+        }
+        Section("默认标注样式（新建标注时套用）") {
+            ColorPicker("颜色", selection: defaultColorBinding)
+            Picker("粗细", selection: defaultLineWidth) {
+                Text("细").tag(1.0)
+                Text("中").tag(2.0)
+                Text("粗").tag(4.0)
+                Text("特粗").tag(8.0)
+            }
+            .pickerStyle(.segmented)
+            Picker("线型", selection: defaultLineStyle) {
+                ForEach(LineStyle.allCases) { Text($0.label).tag($0) }
+            }
+            Toggle("填充（矩形 / 椭圆）", isOn: defaultFill)
+        }
+        Section("应用当前为默认") {
+            Button("将当前打开文档的设置存为默认") {
+                if let d = appState.selectedDocument(id: appState.selectedID) {
+                    d.saveAsDefault()
+                    appState.showToast("已保存为默认设置")
+                } else {
+                    appState.showToast("请先打开一个文档")
+                }
+            }
+        }
+        Section("更新") {
+            Toggle("自动检查更新", isOn: checkUpdates)
+            Button("检查更新…") { checkForUpdates() }
+        }
+    }
+
+    // MARK: 配置子 tab —— 文件级（作用域：当前文档，随文档记忆）
+
+    @ViewBuilder
+    private var fileLevelForm: some View {
+        if let d = appState.selectedDocument(id: appState.selectedID) {
+            Section("文件级设置（仅当前文档）") {
+                Picker("主题", selection: docThemeBinding(d)) {
+                    ForEach(Theme.allCases) { Text($0.label).tag($0) }
+                }
+                Picker("版式", selection: docModeBinding(d)) {
+                    ForEach(modes, id: \.0) { Text($0.1).tag($0.0) }
+                }
+                Picker("滚动方向", selection: docDirectionBinding(d)) {
+                    Text("纵向").tag(PDFDisplayDirection.vertical)
+                    Text("横向").tag(PDFDisplayDirection.horizontal)
+                }
+                Picker("旋转", selection: docRotationBinding(d)) {
+                    Text("0°").tag(0)
+                    Text("90°").tag(90)
+                    Text("180°").tag(180)
+                    Text("270°").tag(270)
+                }
+                ColorPicker("标注颜色", selection: docColorBinding(d))
+                Picker("线宽", selection: docWidthBinding(d)) {
+                    Text("细").tag(1.0)
+                    Text("中").tag(2.0)
+                    Text("粗").tag(4.0)
+                    Text("特粗").tag(8.0)
+                }
+                .pickerStyle(.segmented)
+                Picker("线型", selection: docStyleBinding(d)) {
+                    ForEach(LineStyle.allCases) { Text($0.label).tag($0) }
+                }
+                Toggle("填充（矩形 / 椭圆）", isOn: docFillBinding(d))
+                Toggle("显示高亮与备注", isOn: docShowAnnotationsBinding(d))
+            }
+        } else {
+            Text("请先打开一个文档，再编辑它的文件级设置。").foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: 配置子 tab —— 页面级（作用域：当前文档运行态）
+
+    @ViewBuilder
+    private var pageLevelForm: some View {
+        if let d = appState.selectedDocument(id: appState.selectedID) {
+            Section("缩放倍率（拖动调节，实时生效）") {
+                HStack {
+                    Text("缩放")
+                    Spacer()
+                    Text(String(format: "%.0f%%", docScaleBinding(d).wrappedValue * 100))
+                        .foregroundStyle(.secondary).monospacedDigit()
+                }
+                Slider(value: docScaleBinding(d), in: 0.5...4.0, step: 0.05)
+                HStack {
+                    Button("适应宽度") { d.fitWidth() }
+                    Button("适应页面") { d.fitPage() }
+                    Button("适应高度") { d.fitHeight() }
+                    Button("实际大小") { d.actualSize() }
+                }
+            }
+        } else {
+            Text("请先打开一个文档，再调整它的页面级配置。").foregroundStyle(.secondary)
         }
     }
 

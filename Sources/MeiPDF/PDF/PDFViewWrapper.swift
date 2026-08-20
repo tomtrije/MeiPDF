@@ -261,15 +261,27 @@ final class MeiPDFView: PDFView {
 
     /// Topmost *own* annotation (tagged `MeiPDF:<uuid>`) under the event — used for
     /// selection / move / resize. Text marks are skipped (they must not hijack
-    /// text selection or dragging).
+    /// text selection or dragging). Robust against PDFKit quirks: ours are matched
+    /// by `userName` first (never skipped when `type` is nil), and if the live
+    /// `bounds` is unreliable after a reopen the authoritative model bounds act as
+    /// a fallback.
     private func ourAnnotationUnder(_ event: NSEvent) -> (PDFPage, PDFAnnotation)? {
-        guard let page = currentPage else { return nil }
+        guard let page = currentPage, let ds = documentState else { return nil }
         let p = pagePoint(event, page: page)
+        // 1) Live annotations (fast path).
         for ann in page.annotations.reversed() {
-            guard let t = ann.type else { continue }
-            if t == "Highlight" || t == "Underline" || t == "StrikeOut" { continue }
-            if ann.userName?.hasPrefix("MeiPDF:") == true, ann.bounds.contains(p) {
-                return (page, ann)
+            guard ann.userName?.hasPrefix("MeiPDF:") == true else { continue }
+            if let t = ann.type, t == "Highlight" || t == "Underline" || t == "StrikeOut" { continue }
+            if ann.bounds.contains(p) { return (page, ann) }
+        }
+        // 2) Fallback: authoritative model bounds (reopen can leave a live
+        //    annotation's bounds off for some subtypes, e.g. free text).
+        let idx = ds.pdfDocument.index(for: page)
+        for a in ds.annotations where a.pageIndex == idx {
+            let b = CGRect(x: a.bounds.x, y: a.bounds.y, width: a.bounds.w, height: a.bounds.h)
+            if b.contains(p),
+               let live = page.annotations.first(where: { $0.userName == "MeiPDF:" + a.id.uuidString }) {
+                return (page, live)
             }
         }
         return nil
@@ -427,13 +439,24 @@ final class MeiPDFView: PDFView {
             return
         }
 
-        // 2) Double-click a free-text / note → open its text editor.
+        // 2) Double-click a note / text box / pure text → open its in-place editor.
         if event.clickCount == 2 {
             if let (dpage, dann) = ourAnnotationUnder(event),
                let id = meiPDFId(dann) {
                 let idx = self.document?.index(for: dpage) ?? 0
                 MainActor.assumeIsolated {
-                    if dann.type == "Text" {
+                    // Decide by the authoritative model type (robust after a reopen,
+                    // where the live annotation's `type` string may be unreliable).
+                    if let model = self.documentState?.annotations.first(where: { $0.id == id }) {
+                        switch model.type {
+                        case .note:
+                            self.documentState?.editingNote = NoteEditTarget(id: id, pageIndex: idx)
+                        case .freeText, .plainText:
+                            self.documentState?.editingFreeText = NoteEditTarget(id: id, pageIndex: idx)
+                        default:
+                            break
+                        }
+                    } else if dann.type == "Text" {
                         self.documentState?.editingNote = NoteEditTarget(id: id, pageIndex: idx)
                     } else if dann.type == "FreeText" {
                         self.documentState?.editingFreeText = NoteEditTarget(id: id, pageIndex: idx)
