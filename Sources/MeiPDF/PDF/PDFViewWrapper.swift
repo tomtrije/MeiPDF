@@ -164,8 +164,11 @@ final class InlineTextView: NSTextView {
 }
 
 /// Hosts an `InlineTextView` on the PDF's documentView so editing happens right at
-/// the annotation's position and tracks scrolling / zoom for free. Commits on
-/// focus loss (like Preview) and on Return for single-line types.
+/// the annotation's position and tracks scrolling / zoom for free. The host is
+/// styled to stand in for the annotation itself: notes get the bubble look, text
+/// annotations are transparent — so editing feels like editing the annotation,
+/// not a separate box. Commits on focus loss (like Preview) and on Return for
+/// single-line types.
 final class InlineEditorHost: NSView, NSTextViewDelegate {
     let textView = InlineTextView()
     var onSave: ((String) -> Void)?
@@ -177,10 +180,6 @@ final class InlineEditorHost: NSView, NSTextViewDelegate {
 
     private func setup() {
         wantsLayer = true
-        layer?.cornerRadius = 4
-        layer?.borderWidth = 1
-        layer?.borderColor = NSColor.controlAccentColor.cgColor
-        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
         textView.isRichText = false
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 3, height: 3)
@@ -200,7 +199,10 @@ final class InlineEditorHost: NSView, NSTextViewDelegate {
         if commit { onSave?(textView.string) } else { onCancel?() }
     }
 
-    func beginEditing(text: String, font: NSFont, textColor: NSColor, commitOnReturn: Bool) {
+    /// `bubble` styles the host like a note bubble (tinted rounded rect + accent
+    /// border); otherwise it is fully transparent so text is edited in place.
+    func beginEditing(text: String, font: NSFont, textColor: NSColor,
+                      commitOnReturn: Bool, bubble: Bool, accent: NSColor) {
         finished = false
         textView.string = text
         textView.font = font
@@ -208,6 +210,17 @@ final class InlineEditorHost: NSView, NSTextViewDelegate {
         textView.commitOnReturn = commitOnReturn
         textView.onCommit = { [weak self] in self?.finish(commit: true) }
         textView.onCancel = { [weak self] in self?.finish(commit: false) }
+        if bubble {
+            let base = NSColor.windowBackgroundColor.withAlphaComponent(0.92)
+            layer?.backgroundColor = (base.blended(withFraction: 0.15, of: accent.withAlphaComponent(0.35)) ?? base).cgColor
+            layer?.cornerRadius = 4
+            layer?.borderWidth = 1
+            layer?.borderColor = accent.withAlphaComponent(0.45).cgColor
+        } else {
+            layer?.backgroundColor = NSColor.clear.cgColor
+            layer?.cornerRadius = 0
+            layer?.borderWidth = 0
+        }
         window?.makeFirstResponder(textView)
     }
 }
@@ -712,10 +725,14 @@ final class MeiPDFView: PDFView {
 
     private var inlineEditor: InlineEditorHost?
     private var activeEditID: UUID?
+    /// The annotation currently being edited (hidden while editing, so the styled
+    /// editor stands in for it — the same annotation keeps the new contents on save).
+    private weak var editingAnnotation: PDFAnnotation?
 
     /// Show / move / hide the in-place editor based on `editingNote`/`editingFreeText`.
-    /// Called from `updateNSView` (deferred off the display cycle). The editor is a
-    /// subview of `documentView`, so it tracks scrolling and zoom automatically.
+    /// Called from the mouse handlers (immediately) and from `updateNSView` (deferred
+    /// off the display cycle, as a safety net). The editor is a subview of
+    /// `documentView`, so it tracks scrolling and zoom automatically.
     func syncInlineEditor() {
         guard let ds = documentState else { hideInlineEditor(); return }
         guard let target = ds.editingNote ?? ds.editingFreeText else { hideInlineEditor(); return }
@@ -736,6 +753,13 @@ final class MeiPDFView: PDFView {
         let isPlain = model?.type == .plainText
         let font = NSFont.systemFont(ofSize: isNote ? 12 : (isPlain ? 14 : max(11, (model?.lineWidth ?? 2) * 6)))
         let textColor: NSColor = isNote ? .labelColor : (model?.color.nsColor ?? .labelColor)
+        let accent = model?.color.nsColor ?? .systemYellow
+
+        // Hide the annotation's own rendering while it is being edited: the styled
+        // editor stands in for it, so the edit feels in-place and the same
+        // annotation simply gets new contents on save (`updateAnnotationContents`).
+        ann.shouldDisplay = false
+        editingAnnotation = ann
 
         let ed: InlineEditorHost
         if let existing = inlineEditor {
@@ -757,7 +781,8 @@ final class MeiPDFView: PDFView {
             dv.addSubview(ed)
         }
         activeEditID = target.id
-        ed.beginEditing(text: ann.contents ?? "", font: font, textColor: textColor, commitOnReturn: !isNote)
+        ed.beginEditing(text: ann.contents ?? "", font: font, textColor: textColor,
+                        commitOnReturn: !isNote, bubble: isNote, accent: accent)
         repositionEditor(ed, pageIndex: target.pageIndex, id: target.id)
     }
 
@@ -768,14 +793,20 @@ final class MeiPDFView: PDFView {
         let rb = ann.bounds
         let tl = dv.convert(convert(CGPoint(x: rb.minX, y: rb.maxY), from: page), from: self)
         let br = dv.convert(convert(CGPoint(x: rb.maxX, y: rb.minY), from: page), from: self)
-        let w = max(abs(br.x - tl.x), 180)
-        let h = max(abs(br.y - tl.y), 60)
+        // Tight to the annotation (small min so empty notes are still usable).
+        let w = max(abs(br.x - tl.x), 120)
+        let h = max(abs(br.y - tl.y), 32)
         let x = min(tl.x, br.x)
         let y = min(tl.y, br.y)
         ed.frame = CGRect(x: x, y: y, width: w, height: h)
     }
 
     private func hideInlineEditor() {
+        // Bring the annotation's own rendering back (it was hidden while editing).
+        if let ann = editingAnnotation, let ds = documentState {
+            ann.shouldDisplay = ds.showAnnotations
+        }
+        editingAnnotation = nil
         activeEditID = nil
         inlineEditor?.removeFromSuperview()
         inlineEditor = nil
