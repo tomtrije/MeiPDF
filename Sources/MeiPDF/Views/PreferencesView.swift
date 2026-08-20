@@ -1,19 +1,8 @@
 import SwiftUI
 import PDFKit
 
-/// 三级配置的「配置」子 tab。只有**可修改的配置**出现在这里；只读状态（当前页、
-/// 缩放锁定、书签/标注/搜索计数等）属于「状态」，只在该文档的「配置与状态总览」
-/// 弹层中展示，不在这里。
-enum ConfigSection: String, CaseIterable, Identifiable {
-    case appDefaults = "应用默认"
-    case fileLevel = "当前文档"
-    case pageLevel = "页面状态"
-    var id: String { rawValue }
-}
-
 struct PreferencesView: View {
     @Environment(AppState.self) private var appState
-    @State private var configSection: ConfigSection = .appDefaults
 
     private let modes: [(PDFDisplayMode, String)] = [
         (.singlePage, "单页"),
@@ -132,20 +121,22 @@ struct PreferencesView: View {
     var body: some View {
         TabView {
             Form {
-                Picker("配置作用域", selection: $configSection) {
-                    ForEach(ConfigSection.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-
-                switch configSection {
-                case .appDefaults: appDefaultsForm
-                case .fileLevel: fileLevelForm
-                case .pageLevel: pageLevelForm
-                }
+                appDefaultsForm
             }
             .formStyle(.grouped)
-            .tabItem { Label("配置", systemImage: "gearshape") }
+            .tabItem { Label("应用默认", systemImage: "gearshape") }
+
+            Form {
+                fileLevelForm
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("当前文档", systemImage: "doc.text") }
+
+            Form {
+                pageLevelForm
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("页面状态", systemImage: "gauge") }
 
             Form {
                 Section("快捷键") {
@@ -167,7 +158,7 @@ struct PreferencesView: View {
         }
     }
 
-    // MARK: 配置子 tab —— 应用级默认（作用域：全局）
+    // MARK: 配置 tab —— 应用级默认（作用域：全局）
 
     @ViewBuilder
     private var appDefaultsForm: some View {
@@ -238,7 +229,7 @@ struct PreferencesView: View {
         }
     }
 
-    // MARK: 配置子 tab —— 文件级（作用域：当前文档，随文档记忆）
+    // MARK: 配置 tab —— 文件级（作用域：当前文档，随文档记忆）
 
     @ViewBuilder
     private var fileLevelForm: some View {
@@ -279,7 +270,7 @@ struct PreferencesView: View {
         }
     }
 
-    // MARK: 配置子 tab —— 页面级（作用域：当前文档运行态）
+    // MARK: 配置 tab —— 页面级（作用域：当前文档运行态）
 
     @ViewBuilder
     private var pageLevelForm: some View {

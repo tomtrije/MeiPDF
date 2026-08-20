@@ -360,6 +360,7 @@ final class MeiPDFView: PDFView {
                     ds.activeTool = nil
                     ds.selectedAnnotationID = ann.id
                     ds.editingFreeText = NoteEditTarget(id: ann.id, pageIndex: idx)
+                    self.syncInlineEditor()
                     return
                 }
                 // Freehand: start capturing a stroke.
@@ -399,6 +400,7 @@ final class MeiPDFView: PDFView {
                 ds.activeTool = nil
                 ds.selectedAnnotationID = ann.id
                 ds.editingNote = NoteEditTarget(id: ann.id, pageIndex: idx)
+                self.syncInlineEditor()
                 return
             }
             self.dragStart = p
@@ -462,6 +464,8 @@ final class MeiPDFView: PDFView {
                         self.documentState?.editingFreeText = NoteEditTarget(id: id, pageIndex: idx)
                     }
                 }
+                // Show the editor immediately (do not wait for a SwiftUI re-render).
+                self.syncInlineEditor()
                 return
             }
         }
